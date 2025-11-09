@@ -22,12 +22,18 @@ struct VersionCommand: AsyncParsableCommand {
     var version: String
 
     @Option(name: .customLong("hintGerman"), help: "German release notes")
-    var hintGerman: String
+    var hintGerman: String?
 
     @Option(name: .customLong("hintEnglish"), help: "English release notes")
-    var hintEnglish: String
+    var hintEnglish: String?
+
+    @Option(name: .customLong("hint"), help: "JSON string with 'german' and 'english' keys containing release notes")
+    var hintJSON: String?
 
     func run() async throws {
+        // Parse hints from either JSON or individual options
+        let (germanHint, englishHint) = try parseHints()
+
         // Retrieve credentials from keychain
         let service = KeychainHelper.service
 
@@ -91,13 +97,13 @@ struct VersionCommand: AsyncParsableCommand {
                 provider: provider,
                 versionID: iOSVersionID,
                 locale: "de-DE",
-                whatsNew: hintGerman
+                whatsNew: germanHint
             )
             try await updateOrCreateLocalization(
                 provider: provider,
                 versionID: iOSVersionID,
                 locale: "en-US",
-                whatsNew: hintEnglish
+                whatsNew: englishHint
             )
 
             // Update localizations for macOS
@@ -106,13 +112,13 @@ struct VersionCommand: AsyncParsableCommand {
                 provider: provider,
                 versionID: macOSVersionID,
                 locale: "de-DE",
-                whatsNew: hintGerman
+                whatsNew: germanHint
             )
             try await updateOrCreateLocalization(
                 provider: provider,
                 versionID: macOSVersionID,
                 locale: "en-US",
-                whatsNew: hintEnglish
+                whatsNew: englishHint
             )
 
             print("✅ Successfully updated versions with release notes")
@@ -120,6 +126,33 @@ struct VersionCommand: AsyncParsableCommand {
             print("❌ Error: \(error)")
             throw error
         }
+    }
+
+    private func parseHints() throws -> (german: String, english: String) {
+        // If JSON hint is provided, parse it
+        if let jsonString = hintJSON {
+            guard let jsonData = jsonString.data(using: .utf8) else {
+                throw ValidationError("Invalid JSON string encoding")
+            }
+
+            guard let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any] else {
+                throw ValidationError("Invalid JSON format. Expected object with 'german' and 'english' keys")
+            }
+
+            guard let german = json["german"] as? String,
+                  let english = json["english"] as? String else {
+                throw ValidationError("JSON must contain 'german' and 'english' string keys")
+            }
+
+            return (german, english)
+        }
+
+        // Otherwise, use individual options
+        guard let german = hintGerman, let english = hintEnglish else {
+            throw ValidationError("Either provide --hint with JSON, or both --hintGerman and --hintEnglish")
+        }
+
+        return (german, english)
     }
 
     private func resolveAppID(provider: APIProvider, bundleID: String) async throws -> String {

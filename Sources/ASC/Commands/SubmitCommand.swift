@@ -44,7 +44,9 @@ struct SubmitCommand: AsyncParsableCommand {
             resolvedAppID = try await KeychainHelper.resolveAppID(provider: provider, bundleID: appID)
         }
 
-        // Process each platform
+        // Collect all versions to submit
+        var versionsToSubmit: [(platformName: String, platform: Platform, versionID: String, versionString: String)] = []
+
         for (platformName, platformValue) in platforms {
             print("\n📱 Processing \(platformName)...")
 
@@ -60,20 +62,32 @@ struct SubmitCommand: AsyncParsableCommand {
             }
 
             print("  Found version: \(versionString) (ID: \(versionID))")
+            versionsToSubmit.append((platformName, platformValue, versionID, versionString))
+        }
 
-            // Submit version for review
-            print("📤 Submitting version \(versionString) for review...")
-            do {
-                try await submitVersion(provider: provider, appID: resolvedAppID, platform: platformValue, versionID: versionID)
-                print("✅ Successfully submitted \(platformName) version \(versionString) for review")
-            } catch {
-                let errorString = String(describing: error)
-                if errorString.contains("build") || errorString.contains("BUILD") {
-                    print("❌ Error: No build assigned to version \(versionString)")
-                    print("   Please run: asc select-build \(appID) \(versionString) --platform \(platform.lowercased())")
-                } else {
-                    print("❌ Error submitting version: \(error)")
+        // If no versions found, exit
+        guard !versionsToSubmit.isEmpty else {
+            print("\n❌ No versions ready for submission")
+            return
+        }
+
+        // Submit all versions in one ReviewSubmission
+        print("\n📤 Creating review submission for \(versionsToSubmit.count) version(s)...")
+        do {
+            try await submitVersions(provider: provider, appID: resolvedAppID, versions: versionsToSubmit)
+            print("\n✅ Successfully submitted for review:")
+            for version in versionsToSubmit {
+                print("   • \(version.platformName): \(version.versionString)")
+            }
+        } catch {
+            let errorString = String(describing: error)
+            if errorString.contains("build") || errorString.contains("BUILD") {
+                print("❌ Error: Build missing for one or more versions")
+                for version in versionsToSubmit {
+                    print("   Check: asc select-build \(appID) \(version.versionString) --platform \(version.platformName.lowercased())")
                 }
+            } else {
+                print("❌ Error submitting versions: \(error)")
             }
         }
     }
@@ -114,56 +128,106 @@ struct SubmitCommand: AsyncParsableCommand {
         }
     }
 
-    private func submitVersion(
+    private func submitVersions(
         provider: APIProvider,
         appID: String,
-        platform: Platform,
-        versionID: String
+        versions: [(platformName: String, platform: Platform, versionID: String, versionString: String)]
     ) async throws {
-        // Step 1: Create ReviewSubmission (container for app/platform)
-        let reviewSubmissionRequest = ReviewSubmissionCreateRequest(
-            data: .init(
-                type: .reviewSubmissions,
-                attributes: .init(platform: platform),
-                relationships: .init(
-                    app: .init(
-                        data: .init(
-                            type: .apps,
-                            id: appID
+        // Apple's ReviewSubmission rules:
+        // - One ReviewSubmission can only contain ONE app store version
+        // - Must specify platform attribute
+        // - Create separate ReviewSubmissions for each platform
+
+        for version in versions {
+            print("  Processing \(version.platformName) version \(version.versionString)...")
+
+            // Check if ReviewSubmission already exists for this platform
+            let reviewSubmissionID: String
+
+            if let existingID = try await findExistingReviewSubmission(
+                provider: provider,
+                appID: appID,
+                platform: version.platform
+            ) {
+                print("    Found existing review submission with ID: \(existingID)")
+                reviewSubmissionID = existingID
+            } else {
+                // Create ReviewSubmission for this platform
+                let reviewSubmissionRequest = ReviewSubmissionCreateRequest(
+                    data: .init(
+                        type: .reviewSubmissions,
+                        attributes: .init(platform: version.platform),
+                        relationships: .init(
+                            app: .init(
+                                data: .init(
+                                    type: .apps,
+                                    id: appID
+                                )
+                            )
+                        )
+                    )
+                )
+
+                let createRequest = APIEndpoint.v1.reviewSubmissions.post(reviewSubmissionRequest)
+                let reviewSubmissionResponse = try await provider.request(createRequest)
+                reviewSubmissionID = reviewSubmissionResponse.data.id
+                print("    Created review submission with ID: \(reviewSubmissionID)")
+            }
+
+            // Add the version as ReviewSubmissionItem
+            print("    Adding version as review item...")
+            let itemRequest = ReviewSubmissionItemCreateRequest(
+                data: .init(
+                    type: .reviewSubmissionItems,
+                    relationships: .init(
+                        reviewSubmission: .init(
+                            data: .init(
+                                type: .reviewSubmissions,
+                                id: reviewSubmissionID
+                            )
+                        ),
+                        appStoreVersion: .init(
+                            data: .init(
+                                type: .appStoreVersions,
+                                id: version.versionID
+                            )
                         )
                     )
                 )
             )
-        )
 
-        let createRequest = APIEndpoint.v1.reviewSubmissions.post(reviewSubmissionRequest)
-        let reviewSubmissionResponse = try await provider.request(createRequest)
-        let reviewSubmissionID = reviewSubmissionResponse.data.id
+            let addItemRequest = APIEndpoint.v1.reviewSubmissionItems.post(itemRequest)
+            _ = try await provider.request(addItemRequest)
+        }
+    }
 
-        print("  Created review submission with ID: \(reviewSubmissionID)")
+    private func findExistingReviewSubmission(
+        provider: APIProvider,
+        appID: String,
+        platform: Platform
+    ) async throws -> String? {
+        // Map Platform to FilterPlatform
+        let filterPlatform: APIEndpoint.V1.ReviewSubmissions.GetParameters.FilterPlatform
+        switch platform {
+        case .ios:
+            filterPlatform = .ios
+        case .macOs:
+            filterPlatform = .macOs
+        case .tvOs:
+            filterPlatform = .tvOs
+        case .visionOs:
+            filterPlatform = .visionOs
+        }
 
-        // Step 2: Add ReviewSubmissionItem (the actual version to be reviewed)
-        let itemRequest = ReviewSubmissionItemCreateRequest(
-            data: .init(
-                type: .reviewSubmissionItems,
-                relationships: .init(
-                    reviewSubmission: .init(
-                        data: .init(
-                            type: .reviewSubmissions,
-                            id: reviewSubmissionID
-                        )
-                    ),
-                    appStoreVersion: .init(
-                        data: .init(
-                            type: .appStoreVersions,
-                            id: versionID
-                        )
-                    )
-                )
-            )
-        )
+        // Look for existing review submissions for this app and platform
+        var parameters = APIEndpoint.V1.ReviewSubmissions.GetParameters(filterApp: [appID])
+        parameters.filterPlatform = [filterPlatform]
+        parameters.filterState = [.readyForReview, .waitingForReview, .inReview]
+        parameters.limit = 1
 
-        let addItemRequest = APIEndpoint.v1.reviewSubmissionItems.post(itemRequest)
-        _ = try await provider.request(addItemRequest)
+        let request = APIEndpoint.v1.reviewSubmissions.get(parameters: parameters)
+        let response = try await provider.request(request)
+
+        return response.data.first?.id
     }
 }

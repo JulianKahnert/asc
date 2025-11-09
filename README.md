@@ -16,9 +16,12 @@ The `issuerID`, `keyID` and `privateKey` will be saved in the keychain.
 
 - 🚀 Create new versions for iOS and macOS simultaneously
 - 🔄 Automatically update version numbers if an active version exists
-- 📝 Update "What's New" texts in German and English
+- 📝 Update "What's New" texts in German and English (supports JSON input)
 - 🔍 Support for both App ID (numeric) and Bundle ID (e.g., com.example.app)
 - 🔐 Secure credential storage in macOS Keychain
+- 📊 Display current version states and release notes
+- 📤 Submit versions for Apple review
+- 🔗 Select and assign builds to versions
 
 ## Installation
 
@@ -104,11 +107,61 @@ Found 2 app(s):
 Create a version (if needed) and update the "What's New" texts. You can use either the App ID (numeric) or Bundle ID:
 
 ```bash
-# Using App ID
+# Using App ID with separate language flags
 asc version 1234567890 2.1.0 --hintGerman "Fehlerbehebungen und Verbesserungen" --hintEnglish "Bug fixes and improvements"
 
 # Using Bundle ID (will be automatically resolved to App ID)
 asc version com.example.myapp 2.1.0 --hintGerman "Neue Funktionen" --hintEnglish "New features"
+
+# Using JSON format for hints (supports multiline content)
+asc version com.example.myapp 2.1.0 --hint '{"german": "Neue Funktionen:\n- Feature 1\n- Feature 2", "english": "New features:\n- Feature 1\n- Feature 2"}'
+```
+
+### Show version information
+
+Display current versions with their states and release notes:
+
+```bash
+# Show all versions for an app
+asc show com.example.myapp
+
+# Or using App ID
+asc show 1234567890
+```
+
+This will display:
+```
+📱 iOS Versions:
+  Version: 2.1.0
+  State: PREPARE_FOR_SUBMISSION
+
+💻 macOS Versions:
+  Version: 2.1.0
+  State: READY_FOR_SALE
+```
+
+### Submit version for review
+
+Submit the current version in PREPARE_FOR_SUBMISSION state for Apple review:
+
+```bash
+# Submit iOS version
+asc submit com.example.myapp
+
+# Submit macOS version
+asc submit com.example.myapp --platform macos
+```
+
+### Select build for version
+
+Assign the newest build to a specific version:
+
+```bash
+# Select newest iOS build for version 2.1.0
+asc select-build com.example.myapp 2.1.0
+
+# Select newest macOS build
+asc select-build com.example.myapp 2.1.0 --platform macos
 ```
 
 ### Clear stored credentials
@@ -135,9 +188,36 @@ asc version com.example.myapp 2.1.0 \
     --hintGerman "Fehlerbehebungen und Verbesserungen" \
     --hintEnglish "Bug fixes and improvements"
 
-# 4. If needed later, clear credentials
+# Or using JSON format
+asc version com.example.myapp 2.1.0 \
+    --hint '{"german": "Neue Funktionen", "english": "New features"}'
+
+# 4. Show the current version status
+asc show com.example.myapp
+
+# 5. Select the newest build for the version
+asc select-build com.example.myapp 2.1.0
+
+# 6. Submit the version for review
+asc submit com.example.myapp
+
+# 7. If needed later, clear credentials
 asc clear
 ```
+
+## Available Commands
+
+| Command | Description |
+|---------|-------------|
+| `init` | Initialize and store App Store Connect API credentials |
+| `list-apps` | List all apps in your App Store Connect account |
+| `version` | Create or update a version with release notes |
+| `show` | Display current versions and their states |
+| `submit` | Submit a version for Apple review |
+| `select-build` | Assign the newest build to a version |
+| `clear` | Remove stored credentials from keychain |
+
+Use `asc <command> --help` to see detailed options for each command.
 
 ## Limitations
 

@@ -30,50 +30,41 @@ struct ShowCommand: AsyncParsableCommand {
 
         // Fetch iOS version info
         print("\n📱 iOS Versions:")
-        try await showVersionInfo(provider: provider, appID: resolvedAppID, platform: .iOS)
+        try await showVersionInfo(provider: provider, appID: resolvedAppID, platform: .ios)
 
         // Fetch macOS version info
         print("\n💻 macOS Versions:")
-        try await showVersionInfo(provider: provider, appID: resolvedAppID, platform: .macOS)
+        try await showVersionInfo(provider: provider, appID: resolvedAppID, platform: .macOs)
     }
 
     private func showVersionInfo(
         provider: APIProvider,
         appID: String,
-        platform: AppStoreVersionCreateRequest.Data.Attributes.Platform
+        platform: Platform
     ) async throws {
         // Note: The SDK doesn't support the 'include' parameter for the list endpoint,
         // but the API does support it. We need to make individual requests for each version
         // to get build information. For now, we'll fetch builds separately.
 
-        // First, get all versions
-        let endpoint: APIEndpoint<AppStoreVersionsResponse> = .appStoreVersions(
-            ofAppWithId: appID,
-            fields: [.appStoreVersions([.versionString, .platform, .appStoreState])],
-            limit: 10
-        )
+        // First, get all versions using new SDK API
+        var parameters = APIEndpoint.V1.Apps.WithID.AppStoreVersions.GetParameters()
+        parameters.fieldsAppStoreVersions = [.versionString, .platform, .appStoreState]
+        parameters.limit = 10
 
-        let versionData: [(id: String, versionString: String, state: String)] = try await withCheckedThrowingContinuation { continuation in
-            provider.request(endpoint) { (result: Result<AppStoreVersionsResponse, Error>) in
-                switch result {
-                case .success(let response):
-                    let filteredVersions = response.data.filter {
-                        $0.attributes?.platform?.rawValue == platform.rawValue
-                    }
+        let request = APIEndpoint.v1.apps.id(appID).appStoreVersions.get(parameters: parameters)
+        let response = try await provider.request(request)
 
-                    let data = filteredVersions.compactMap { version -> (String, String, String)? in
-                        guard let versionString = version.attributes?.versionString,
-                              let state = version.attributes?.appStoreState?.rawValue else {
-                            return nil
-                        }
-                        return (version.id, versionString, state)
-                    }
+        // Filter versions by platform
+        let filteredVersions = response.data.filter {
+            $0.attributes?.platform == platform
+        }
 
-                    continuation.resume(returning: data)
-                case .failure(let error):
-                    continuation.resume(throwing: error)
-                }
+        let versionData = filteredVersions.compactMap { version -> (String, String, String)? in
+            guard let versionString = version.attributes?.versionString,
+                  let state = version.attributes?.appStoreState?.rawValue else {
+                return nil
             }
+            return (version.id, versionString, state)
         }
 
         if versionData.isEmpty {
@@ -102,10 +93,41 @@ struct ShowCommand: AsyncParsableCommand {
     private func getBuildsMap(
         provider: APIProvider,
         appID: String,
-        platform: AppStoreVersionCreateRequest.Data.Attributes.Platform
+        platform: Platform
     ) async throws -> [String: String] {
-        // TODO: Implement once SDK supports Build.appStoreVersion relationship
-        // See SDK_LIMITATIONS.md for details on required SDK changes
-        return [:]
+        // Get all versions with build relationship included
+        var parameters = APIEndpoint.V1.Apps.WithID.AppStoreVersions.GetParameters()
+        parameters.fieldsAppStoreVersions = [.versionString, .platform, .build]
+        parameters.fieldsBuilds = [.version]
+        parameters.include = [.build]
+        parameters.limit = 50
+
+        let request = APIEndpoint.v1.apps.id(appID).appStoreVersions.get(parameters: parameters)
+        let response = try await provider.request(request)
+
+        // Build map of versionID -> buildNumber
+        var buildMap: [String: String] = [:]
+
+        // Filter versions by platform
+        let filteredVersions = response.data.filter {
+            $0.attributes?.platform == platform
+        }
+
+        // Extract build information from included data
+        for version in filteredVersions {
+            // Check if this version has a build relationship
+            if let buildData = version.relationships?.build?.data,
+               let build = response.included?.compactMap({ includedItem -> Build? in
+                   if case .build(let buildItem) = includedItem {
+                       return buildItem
+                   }
+                   return nil
+               }).first(where: { $0.id == buildData.id }),
+               let buildVersion = build.attributes?.version {
+                buildMap[version.id] = buildVersion
+            }
+        }
+
+        return buildMap
     }
 }

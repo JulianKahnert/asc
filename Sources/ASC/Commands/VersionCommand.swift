@@ -54,7 +54,7 @@ struct VersionCommand: AsyncParsableCommand {
                 provider: provider,
                 appID: resolvedAppID,
                 versionString: version,
-                platform: .iOS
+                platform: .ios
             )
             print("✅ iOS version ID: \(iOSVersionID)")
 
@@ -64,7 +64,7 @@ struct VersionCommand: AsyncParsableCommand {
                 provider: provider,
                 appID: resolvedAppID,
                 versionString: version,
-                platform: .macOS
+                platform: .macOs
             )
             print("✅ macOS version ID: \(macOSVersionID)")
 
@@ -136,7 +136,7 @@ struct VersionCommand: AsyncParsableCommand {
         provider: APIProvider,
         appID: String,
         versionString: String,
-        platform: AppStoreVersionCreateRequest.Data.Attributes.Platform
+        platform: Platform
     ) async throws -> String {
         // Try to create the version
         do {
@@ -198,91 +198,112 @@ struct VersionCommand: AsyncParsableCommand {
         provider: APIProvider,
         appID: String,
         versionString: String,
-        platform: AppStoreVersionCreateRequest.Data.Attributes.Platform
+        platform: Platform
     ) async throws -> String {
-        return try await withCheckedThrowingContinuation { continuation in
-            let endpoint = APIEndpoint.create(
-                appStoreVersionForAppId: appID,
-                versionString: versionString,
-                platform: platform
-            )
+        let attributes = AppStoreVersionCreateRequest.Data.Attributes(
+            platform: platform,
+            versionString: versionString
+        )
+        let appRelationship = AppStoreVersionCreateRequest.Data.Relationships.App(
+            data: .init(type: .apps, id: appID)
+        )
+        let relationships = AppStoreVersionCreateRequest.Data.Relationships(
+            app: appRelationship,
+            appStoreVersionLocalizations: nil,
+            build: nil
+        )
+        let data = AppStoreVersionCreateRequest.Data(
+            type: .appStoreVersions,
+            attributes: attributes,
+            relationships: relationships
+        )
+        let request = AppStoreVersionCreateRequest(data: data)
 
-            provider.request(endpoint) { result in
-                switch result {
-                case .success(let response):
-                    continuation.resume(returning: response.data.id)
-                case .failure(let error):
-                    continuation.resume(throwing: error)
-                }
-            }
-        }
+        let apiRequest = APIEndpoint.v1.appStoreVersions.post(request)
+        let response = try await provider.request(apiRequest)
+        return response.data.id
     }
 
     private func findExistingVersion(
         provider: APIProvider,
         appID: String,
         versionString: String,
-        platform: AppStoreVersionCreateRequest.Data.Attributes.Platform
+        platform: Platform
     ) async throws -> String {
-        try await withCheckedThrowingContinuation { continuation in
-            let endpoint: APIEndpoint<AppStoreVersionsResponse> = .appStoreVersions(
-                ofAppWithId: appID,
-                fields: [.appStoreVersions([.versionString, .platform])],
-                limit: 50
-            )
+        var parameters = APIEndpoint.V1.Apps.WithID.AppStoreVersions.GetParameters()
+        parameters.fieldsAppStoreVersions = [.versionString, .platform, .appStoreState]
+        parameters.limit = 50
 
-            provider.request(endpoint) { (result: Result<AppStoreVersionsResponse, Error>) in
-                switch result {
-                case .success(let response):
-                    // Find the version that matches our version string and platform
-                    if let matchingVersion = response.data.first(where: {
-                        $0.attributes?.versionString == versionString &&
-                        $0.attributes?.platform?.rawValue == platform.rawValue
-                    }) {
-                        continuation.resume(returning: matchingVersion.id)
-                    } else {
-                        continuation.resume(throwing: ValidationError("Could not find existing version \(versionString) for platform \(platform.rawValue)"))
-                    }
-                case .failure(let error):
-                    continuation.resume(throwing: error)
-                }
+        let request = APIEndpoint.v1.apps.id(appID).appStoreVersions.get(parameters: parameters)
+        let response = try await provider.request(request)
+
+        // Filter matching versions
+        let matchingVersions = response.data.filter {
+            $0.attributes?.versionString == versionString &&
+            $0.attributes?.platform == platform
+        }
+
+        guard !matchingVersions.isEmpty else {
+            throw ValidationError("Could not find existing version \(versionString) for platform \(platform.rawValue)")
+        }
+
+        // Prioritize by state: active states first
+        let priorityStates = [
+            "PREPARE_FOR_SUBMISSION",
+            "WAITING_FOR_REVIEW",
+            "IN_REVIEW",
+            "PENDING_DEVELOPER_RELEASE",
+            "DEVELOPER_REJECTED",
+            "REJECTED"
+        ]
+
+        // Find version with highest priority state
+        for state in priorityStates {
+            if let version = matchingVersions.first(where: {
+                $0.attributes?.appStoreState?.rawValue == state
+            }) {
+                return version.id
             }
+        }
+
+        // Fallback: return first matching version (e.g., READY_FOR_SALE)
+        if let version = matchingVersions.first {
+            return version.id
+        } else {
+            throw ValidationError("Could not find existing version \(versionString) for platform \(platform.rawValue)")
         }
     }
 
     private func findActiveVersion(
         provider: APIProvider,
         appID: String,
-        platform: AppStoreVersionCreateRequest.Data.Attributes.Platform
+        platform: Platform
     ) async throws -> (id: String, versionString: String)? {
-        try await withCheckedThrowingContinuation { continuation in
-            let endpoint: APIEndpoint<AppStoreVersionsResponse> = .appStoreVersions(
-                ofAppWithId: appID,
-                fields: [.appStoreVersions([.versionString, .platform, .appStoreState])],
-                limit: 10
-            )
+        var parameters = APIEndpoint.V1.Apps.WithID.AppStoreVersions.GetParameters()
+        parameters.fieldsAppStoreVersions = [.versionString, .platform, .appStoreState]
+        parameters.limit = 10
 
-            provider.request(endpoint) { (result: Result<AppStoreVersionsResponse, Error>) in
-                switch result {
-                case .success(let response):
-                    // Find the first version that is in an active state (PREPARE_FOR_SUBMISSION, WAITING_FOR_REVIEW, IN_REVIEW)
-                    let activeStates = ["PREPARE_FOR_SUBMISSION", "WAITING_FOR_REVIEW", "IN_REVIEW", "PENDING_DEVELOPER_RELEASE"]
-                    let activeVersion = response.data
-                        .filter { $0.attributes?.platform?.rawValue == platform.rawValue }
-                        .first { version in
-                            guard let state = version.attributes?.appStoreState?.rawValue else { return false }
-                            return activeStates.contains(state)
-                        }
+        let request = APIEndpoint.v1.apps.id(appID).appStoreVersions.get(parameters: parameters)
 
-                    if let version = activeVersion, let versionString = version.attributes?.versionString {
-                        continuation.resume(returning: (id: version.id, versionString: versionString))
-                    } else {
-                        continuation.resume(returning: nil)
-                    }
-                case .failure:
-                    continuation.resume(returning: nil)
+        do {
+            let response = try await provider.request(request)
+
+            // Find the first version that is in an active state (PREPARE_FOR_SUBMISSION, WAITING_FOR_REVIEW, IN_REVIEW)
+            let activeStates = ["PREPARE_FOR_SUBMISSION", "WAITING_FOR_REVIEW", "IN_REVIEW", "PENDING_DEVELOPER_RELEASE"]
+            let activeVersion = response.data
+                .filter { $0.attributes?.platform == platform }
+                .first { version in
+                    guard let state = version.attributes?.appStoreState?.rawValue else { return false }
+                    return activeStates.contains(state)
                 }
+
+            if let version = activeVersion, let versionString = version.attributes?.versionString {
+                return (id: version.id, versionString: versionString)
+            } else {
+                return nil
             }
+        } catch {
+            return nil
         }
     }
 
@@ -291,21 +312,16 @@ struct VersionCommand: AsyncParsableCommand {
         versionID: String,
         newVersionString: String
     ) async throws {
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            let endpoint = APIEndpoint.modify(
-                appStoreVersionWithId: versionID,
-                versionString: newVersionString
-            )
+        let attributes = AppStoreVersionUpdateRequest.Data.Attributes(versionString: newVersionString)
+        let data = AppStoreVersionUpdateRequest.Data(
+            type: .appStoreVersions,
+            id: versionID,
+            attributes: attributes
+        )
+        let updateRequest = AppStoreVersionUpdateRequest(data: data)
 
-            provider.request(endpoint) { result in
-                switch result {
-                case .success:
-                    continuation.resume()
-                case .failure(let error):
-                    continuation.resume(throwing: error)
-                }
-            }
-        }
+        let apiRequest = APIEndpoint.v1.appStoreVersions.id(versionID).patch(updateRequest)
+        _ = try await provider.request(apiRequest)
     }
 
     private func updateOrCreateLocalization(
@@ -341,26 +357,16 @@ struct VersionCommand: AsyncParsableCommand {
         provider: APIProvider,
         versionID: String
     ) async throws -> [(id: String, locale: String)] {
-        try await withCheckedThrowingContinuation { continuation in
-            let endpoint: APIEndpoint<AppStoreVersionLocalizationsResponse> = .appStoreVersionLocalizations(
-                ofAppStoreVersionWithId: versionID
-            )
+        let request = APIEndpoint.v1.appStoreVersions.id(versionID).appStoreVersionLocalizations.get()
+        let response = try await provider.request(request)
 
-            provider.request(endpoint) { (result: Result<AppStoreVersionLocalizationsResponse, Error>) in
-                switch result {
-                case .success(let response):
-                    let localizations = response.data.map { localization in
-                        (
-                            id: localization.id,
-                            locale: localization.attributes?.locale ?? ""
-                        )
-                    }
-                    continuation.resume(returning: localizations)
-                case .failure(let error):
-                    continuation.resume(throwing: error)
-                }
-            }
+        let localizations = response.data.map { localization in
+            (
+                id: localization.id,
+                locale: localization.attributes?.locale ?? ""
+            )
         }
+        return localizations
     }
 
     private func updateLocalization(
@@ -368,21 +374,16 @@ struct VersionCommand: AsyncParsableCommand {
         localizationID: String,
         whatsNew: String
     ) async throws {
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            let endpoint = APIEndpoint.modify(
-                appStoreVersionLocalizationWithId: localizationID,
-                whatsNew: whatsNew
-            )
+        let attributes = AppStoreVersionLocalizationUpdateRequest.Data.Attributes(whatsNew: whatsNew)
+        let data = AppStoreVersionLocalizationUpdateRequest.Data(
+            type: .appStoreVersionLocalizations,
+            id: localizationID,
+            attributes: attributes
+        )
+        let updateRequest = AppStoreVersionLocalizationUpdateRequest(data: data)
 
-            provider.request(endpoint) { result in
-                switch result {
-                case .success:
-                    continuation.resume()
-                case .failure(let error):
-                    continuation.resume(throwing: error)
-                }
-            }
-        }
+        let apiRequest = APIEndpoint.v1.appStoreVersionLocalizations.id(localizationID).patch(updateRequest)
+        _ = try await provider.request(apiRequest)
     }
 
     private func createLocalization(
@@ -391,22 +392,30 @@ struct VersionCommand: AsyncParsableCommand {
         locale: String,
         whatsNew: String
     ) async throws {
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            let endpoint = APIEndpoint.create(
-                appStoreVersionLocalizationForVersionWithId: versionID,
-                locale: locale,
-                whatsNew: whatsNew
-            )
+        let attributes = AppStoreVersionLocalizationCreateRequest.Data.Attributes(
+            description: nil,
+            locale: locale,
+            keywords: nil,
+            marketingURL: nil,
+            promotionalText: nil,
+            supportURL: nil,
+            whatsNew: whatsNew
+        )
+        let versionRelationship = AppStoreVersionLocalizationCreateRequest.Data.Relationships.AppStoreVersion(
+            data: .init(type: .appStoreVersions, id: versionID)
+        )
+        let relationships = AppStoreVersionLocalizationCreateRequest.Data.Relationships(
+            appStoreVersion: versionRelationship
+        )
+        let data = AppStoreVersionLocalizationCreateRequest.Data(
+            type: .appStoreVersionLocalizations,
+            attributes: attributes,
+            relationships: relationships
+        )
+        let createRequest = AppStoreVersionLocalizationCreateRequest(data: data)
 
-            provider.request(endpoint) { result in
-                switch result {
-                case .success:
-                    print("✅ Created \(locale) localization")
-                    continuation.resume()
-                case .failure(let error):
-                    continuation.resume(throwing: error)
-                }
-            }
-        }
+        let apiRequest = APIEndpoint.v1.appStoreVersionLocalizations.post(createRequest)
+        _ = try await provider.request(apiRequest)
+        print("✅ Created \(locale) localization")
     }
 }

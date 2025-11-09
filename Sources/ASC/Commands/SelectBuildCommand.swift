@@ -26,14 +26,14 @@ struct SelectBuildCommand: AsyncParsableCommand {
 
     func run() async throws {
         // Determine which platforms to process
-        let platforms: [(name: String, value: AppStoreVersionCreateRequest.Data.Attributes.Platform)]
+        let platforms: [(name: String, value: Platform)]
         switch platform.lowercased() {
         case "ios":
-            platforms = [("iOS", .iOS)]
+            platforms = [("iOS", .ios)]
         case "macos":
-            platforms = [("macOS", .macOS)]
+            platforms = [("macOS", .macOs)]
         case "both":
-            platforms = [("iOS", .iOS), ("macOS", .macOS)]
+            platforms = [("iOS", .ios), ("macOS", .macOs)]
         default:
             throw ValidationError("Invalid platform. Use 'ios', 'macos', or 'both'")
         }
@@ -77,71 +77,75 @@ struct SelectBuildCommand: AsyncParsableCommand {
         provider: APIProvider,
         appID: String,
         versionString: String,
-        platform: AppStoreVersionCreateRequest.Data.Attributes.Platform
+        platform: Platform
     ) async throws -> String? {
-        try await withCheckedThrowingContinuation { continuation in
-            let endpoint: APIEndpoint<AppStoreVersionsResponse> = .appStoreVersions(
-                ofAppWithId: appID,
-                fields: [.appStoreVersions([.versionString, .platform])],
-                limit: 50
-            )
+        var parameters = APIEndpoint.V1.Apps.WithID.AppStoreVersions.GetParameters()
+        parameters.fieldsAppStoreVersions = [.versionString, .platform, .appStoreState]
+        parameters.limit = 50
 
-            provider.request(endpoint) { (result: Result<AppStoreVersionsResponse, Error>) in
-                switch result {
-                case .success(let response):
-                    let matchingVersion = response.data.first {
-                        $0.attributes?.versionString == versionString &&
-                        $0.attributes?.platform?.rawValue == platform.rawValue
-                    }
+        let request = APIEndpoint.v1.apps.id(appID).appStoreVersions.get(parameters: parameters)
+        let response = try await provider.request(request)
 
-                    continuation.resume(returning: matchingVersion?.id)
-                case .failure(let error):
-                    continuation.resume(throwing: error)
-                }
+        // Filter matching versions
+        let matchingVersions = response.data.filter {
+            $0.attributes?.versionString == versionString &&
+            $0.attributes?.platform?.rawValue == platform.rawValue
+        }
+
+        // Prioritize by state: active states first
+        let priorityStates = [
+            "PREPARE_FOR_SUBMISSION",
+            "WAITING_FOR_REVIEW",
+            "IN_REVIEW",
+            "PENDING_DEVELOPER_RELEASE",
+            "DEVELOPER_REJECTED",
+            "REJECTED"
+        ]
+
+        // Find version with highest priority state
+        for state in priorityStates {
+            if let version = matchingVersions.first(where: {
+                $0.attributes?.appStoreState?.rawValue == state
+            }) {
+                return version.id
             }
         }
+
+        // Fallback: return first matching version (e.g., READY_FOR_SALE)
+        return matchingVersions.first?.id
     }
 
     private func getNewestBuild(
         provider: APIProvider,
         appID: String,
-        platform: AppStoreVersionCreateRequest.Data.Attributes.Platform
+        platform: Platform
     ) async throws -> String? {
-        try await withCheckedThrowingContinuation { continuation in
-            // Map platform to API filter enum
-            let platformFilter: [ListBuilds.Filter.PreReleaseVersionPlatform]
-            switch platform {
-            case .iOS:
-                platformFilter = [.IOS]
-            case .macOS:
-                platformFilter = [.MAC_OS]
-            default:
-                fatalError("Unexpected platform: \(platform). Should be validated earlier.")
-            }
+        // Map platform to API filter enum
+        let platformFilter: [APIEndpoint.V1.Builds.GetParameters.FilterPreReleaseVersionPlatform]
+        switch platform {
+        case .ios:
+            platformFilter = [.ios]
+        case .macOs:
+            platformFilter = [.macOs]
+        default:
+            fatalError("Unexpected platform: \(platform). Should be validated earlier.")
+        }
 
-            let endpoint: APIEndpoint<BuildsResponse> = .builds(
-                filter: [
-                    .app([appID]),
-                    .preReleaseVersionPlatform(platformFilter)
-                ],
-                sort: [.uploadedDateDescending]
-            )
+        var parameters = APIEndpoint.V1.Builds.GetParameters()
+        parameters.filterApp = [appID]
+        parameters.filterPreReleaseVersionPlatform = platformFilter
+        parameters.sort = [.minusuploadedDate]
 
-            provider.request(endpoint) { (result: Result<BuildsResponse, Error>) in
-                switch result {
-                case .success(let response):
-                    if let build = response.data.first {
-                        if let version = build.attributes?.version {
-                            print("  Found build version: \(version) for platform: \(platform)")
-                        }
-                        continuation.resume(returning: build.id)
-                    } else {
-                        continuation.resume(returning: nil)
-                    }
-                case .failure(let error):
-                    continuation.resume(throwing: error)
-                }
+        let request = APIEndpoint.v1.builds.get(parameters: parameters)
+        let response = try await provider.request(request)
+
+        if let build = response.data.first {
+            if let version = build.attributes?.version {
+                print("  Found build version: \(version) for platform: \(platform)")
             }
+            return build.id
+        } else {
+            return nil
         }
     }
 
@@ -150,21 +154,23 @@ struct SelectBuildCommand: AsyncParsableCommand {
         versionID: String,
         buildID: String
     ) async throws {
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            // Update the app store version with the build
-            let endpoint = APIEndpoint.modify(
-                appStoreVersionWithId: versionID,
-                buildId: buildID
+        // Create the request body to update the app store version with the build
+        let updateRequest = AppStoreVersionUpdateRequest(
+            data: .init(
+                type: .appStoreVersions,
+                id: versionID,
+                relationships: .init(
+                    build: .init(
+                        data: .init(
+                            type: .builds,
+                            id: buildID
+                        )
+                    )
+                )
             )
+        )
 
-            provider.request(endpoint) { result in
-                switch result {
-                case .success:
-                    continuation.resume()
-                case .failure(let error):
-                    continuation.resume(throwing: error)
-                }
-            }
-        }
+        let request = APIEndpoint.v1.appStoreVersions.id(versionID).patch(updateRequest)
+        _ = try await provider.request(request)
     }
 }

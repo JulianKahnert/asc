@@ -21,6 +21,7 @@ The `issuerID`, `keyID` and `privateKey` will be saved in the keychain.
 - 🔐 Secure credential storage in macOS Keychain
 - 📊 Display current version states and release notes
 - 🔗 Select and assign builds to versions
+- 📤 Submit versions for App Review
 
 ## Installation
 
@@ -151,6 +152,27 @@ asc select-build com.example.myapp 2.1.0
 asc select-build com.example.myapp 2.1.0 --platform macos
 ```
 
+### Submit version for review
+
+Submit a version in "Prepare for Submission" state to App Review:
+
+```bash
+# Submit iOS version for review
+asc submit com.example.myapp
+
+# Submit macOS version for review
+asc submit com.example.myapp --platform macos
+
+# Submit both iOS and macOS versions
+asc submit com.example.myapp --platform both
+```
+
+**Prerequisites:**
+- Version must be in `PREPARE_FOR_SUBMISSION` state
+- A build must be assigned to the version (use `select-build` command)
+- All required metadata must be complete
+- Export compliance questions must be answered (if applicable)
+
 ### Clear stored credentials
 
 Remove all stored credentials from keychain:
@@ -185,7 +207,10 @@ asc show com.example.myapp
 # 5. Select the newest build for the version
 asc select-build com.example.myapp 2.1.0
 
-# 6. If needed later, clear credentials
+# 6. Submit the version for App Review
+asc submit com.example.myapp
+
+# 7. If needed later, clear credentials
 asc clear
 ```
 
@@ -198,6 +223,7 @@ asc clear
 | `version` | Create or update a version with release notes |
 | `show` | Display current versions and their states |
 | `select-build` | Assign the newest build to a version |
+| `submit` | Submit version for App Review |
 | `clear` | Remove stored credentials from keychain |
 
 Use `asc <command> --help` to see detailed options for each command.

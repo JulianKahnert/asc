@@ -73,7 +73,7 @@ enum KeychainHelper {
             throw ValidationError("privateKey not found in keychain. Please run 'asc init' first.")
         }
 
-        let configuration = APIConfiguration(
+        let configuration = try APIConfiguration(
             issuerID: issuerID,
             privateKeyID: keyID,
             privateKey: privateKey
@@ -83,25 +83,17 @@ enum KeychainHelper {
     }
 
     static func resolveAppID(provider: APIProvider, bundleID: String) async throws -> String {
-        let endpoint: APIEndpoint<AppsResponse> = .apps(
-            select: [.apps([.name, .bundleId])],
-            filters: [.bundleId([bundleID])],
-            limits: [.apps(1)]
-        )
+        var parameters = APIEndpoint.V1.Apps.GetParameters()
+        parameters.fieldsApps = [.name, .bundleID]
+        parameters.filterBundleID = [bundleID]
+        parameters.limit = 1
 
-        return try await withCheckedThrowingContinuation { continuation in
-            provider.request(endpoint) { (result: Result<AppsResponse, Error>) in
-                switch result {
-                case .success(let response):
-                    guard let app = response.data.first else {
-                        continuation.resume(throwing: ValidationError("No app found with bundle ID '\(bundleID)'"))
-                        return
-                    }
-                    continuation.resume(returning: app.id)
-                case .failure(let error):
-                    continuation.resume(throwing: error)
-                }
-            }
+        let request = APIEndpoint.v1.apps.get(parameters: parameters)
+        let response = try await provider.request(request)
+
+        guard let app = response.data.first else {
+            throw ValidationError("No app found with bundle ID '\(bundleID)'")
         }
+        return app.id
     }
 }

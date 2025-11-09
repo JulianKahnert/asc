@@ -19,35 +19,13 @@ struct ShowCommand: AsyncParsableCommand {
     var appID: String
 
     func run() async throws {
-        // Retrieve credentials from keychain
-        let service = KeychainHelper.service
-
-        guard let issuerID = KeychainHelper.getKeychainItem(service: service, account: "issuerID") else {
-            throw ValidationError("issuerID not found in keychain. Please run 'asc init' first.")
-        }
-
-        guard let keyID = KeychainHelper.getKeychainItem(service: service, account: "keyID") else {
-            throw ValidationError("keyID not found in keychain. Please run 'asc init' first.")
-        }
-
-        guard let privateKey = KeychainHelper.getKeychainItem(service: service, account: "privateKey") else {
-            throw ValidationError("privateKey not found in keychain. Please run 'asc init' first.")
-        }
-
-        // Configure authentication
-        let configuration = APIConfiguration(
-            issuerID: issuerID,
-            privateKeyID: keyID,
-            privateKey: privateKey
-        )
-
-        let provider = APIProvider(configuration: configuration)
+        let provider = try KeychainHelper.createAPIProvider()
 
         // Check if appID is a bundle ID (contains dots) and convert to App ID if needed
         var resolvedAppID = appID
         if appID.contains(".") {
             print("🔍 Resolving bundle ID '\(appID)' to App ID...")
-            resolvedAppID = try await resolveAppID(provider: provider, bundleID: appID)
+            resolvedAppID = try await KeychainHelper.resolveAppID(provider: provider, bundleID: appID)
         }
 
         // Fetch iOS version info
@@ -57,29 +35,6 @@ struct ShowCommand: AsyncParsableCommand {
         // Fetch macOS version info
         print("\n💻 macOS Versions:")
         try await showVersionInfo(provider: provider, appID: resolvedAppID, platform: .macOS)
-    }
-
-    private func resolveAppID(provider: APIProvider, bundleID: String) async throws -> String {
-        let endpoint: APIEndpoint<AppsResponse> = .apps(
-            select: [.apps([.name, .bundleId])],
-            filters: [.bundleId([bundleID])],
-            limits: [.apps(1)]
-        )
-
-        return try await withCheckedThrowingContinuation { continuation in
-            provider.request(endpoint) { (result: Result<AppsResponse, Error>) in
-                switch result {
-                case .success(let response):
-                    guard let app = response.data.first else {
-                        continuation.resume(throwing: ValidationError("No app found with bundle ID '\(bundleID)'"))
-                        return
-                    }
-                    continuation.resume(returning: app.id)
-                case .failure(let error):
-                    continuation.resume(throwing: error)
-                }
-            }
-        }
     }
 
     private func showVersionInfo(
@@ -152,31 +107,5 @@ struct ShowCommand: AsyncParsableCommand {
         // TODO: Implement once SDK supports Build.appStoreVersion relationship
         // See SDK_LIMITATIONS.md for details on required SDK changes
         return [:]
-    }
-
-    private func getLocalizations(
-        provider: APIProvider,
-        versionID: String
-    ) async throws -> [(locale: String, whatsNew: String?)] {
-        try await withCheckedThrowingContinuation { continuation in
-            let endpoint: APIEndpoint<AppStoreVersionLocalizationsResponse> = .appStoreVersionLocalizations(
-                ofAppStoreVersionWithId: versionID
-            )
-
-            provider.request(endpoint) { (result: Result<AppStoreVersionLocalizationsResponse, Error>) in
-                switch result {
-                case .success(let response):
-                    let localizations = response.data.map { localization in
-                        (
-                            locale: localization.attributes?.locale ?? "",
-                            whatsNew: localization.attributes?.whatsNew
-                        )
-                    }
-                    continuation.resume(returning: localizations)
-                case .failure(let error):
-                    continuation.resume(throwing: error)
-                }
-            }
-        }
     }
 }

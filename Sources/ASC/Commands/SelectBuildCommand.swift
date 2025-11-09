@@ -38,35 +38,13 @@ struct SelectBuildCommand: AsyncParsableCommand {
             throw ValidationError("Invalid platform. Use 'ios', 'macos', or 'both'")
         }
 
-        // Retrieve credentials from keychain
-        let service = KeychainHelper.service
-
-        guard let issuerID = KeychainHelper.getKeychainItem(service: service, account: "issuerID") else {
-            throw ValidationError("issuerID not found in keychain. Please run 'asc init' first.")
-        }
-
-        guard let keyID = KeychainHelper.getKeychainItem(service: service, account: "keyID") else {
-            throw ValidationError("keyID not found in keychain. Please run 'asc init' first.")
-        }
-
-        guard let privateKey = KeychainHelper.getKeychainItem(service: service, account: "privateKey") else {
-            throw ValidationError("privateKey not found in keychain. Please run 'asc init' first.")
-        }
-
-        // Configure authentication
-        let configuration = APIConfiguration(
-            issuerID: issuerID,
-            privateKeyID: keyID,
-            privateKey: privateKey
-        )
-
-        let provider = APIProvider(configuration: configuration)
+        let provider = try KeychainHelper.createAPIProvider()
 
         // Check if appID is a bundle ID (contains dots) and convert to App ID if needed
         var resolvedAppID = appID
         if appID.contains(".") {
             print("🔍 Resolving bundle ID '\(appID)' to App ID...")
-            resolvedAppID = try await resolveAppID(provider: provider, bundleID: appID)
+            resolvedAppID = try await KeychainHelper.resolveAppID(provider: provider, bundleID: appID)
         }
 
         // Process each platform
@@ -81,7 +59,7 @@ struct SelectBuildCommand: AsyncParsableCommand {
             }
 
             // Get the newest build
-            print("🔍 Finding newest build for version \(version)...")
+            print("🔍 Finding newest build for \(platformName)...")
             guard let buildID = try await getNewestBuild(provider: provider, appID: resolvedAppID, platform: platformValue) else {
                 print("⚠️  No builds found for this app and platform \(platformName)")
                 continue
@@ -92,29 +70,6 @@ struct SelectBuildCommand: AsyncParsableCommand {
             try await assignBuildToVersion(provider: provider, versionID: versionID, buildID: buildID)
 
             print("✅ Successfully assigned newest build to version \(version) for \(platformName)")
-        }
-    }
-
-    private func resolveAppID(provider: APIProvider, bundleID: String) async throws -> String {
-        let endpoint: APIEndpoint<AppsResponse> = .apps(
-            select: [.apps([.name, .bundleId])],
-            filters: [.bundleId([bundleID])],
-            limits: [.apps(1)]
-        )
-
-        return try await withCheckedThrowingContinuation { continuation in
-            provider.request(endpoint) { (result: Result<AppsResponse, Error>) in
-                switch result {
-                case .success(let response):
-                    guard let app = response.data.first else {
-                        continuation.resume(throwing: ValidationError("No app found with bundle ID '\(bundleID)'"))
-                        return
-                    }
-                    continuation.resume(returning: app.id)
-                case .failure(let error):
-                    continuation.resume(throwing: error)
-                }
-            }
         }
     }
 
@@ -161,8 +116,7 @@ struct SelectBuildCommand: AsyncParsableCommand {
             case .macOS:
                 platformFilter = [.MAC_OS]
             default:
-                // Handle other platforms if needed
-                platformFilter = []
+                fatalError("Unexpected platform: \(platform). Should be validated earlier.")
             }
 
             let endpoint: APIEndpoint<BuildsResponse> = .builds(

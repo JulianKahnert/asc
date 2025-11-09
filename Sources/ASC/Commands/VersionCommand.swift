@@ -34,37 +34,14 @@ struct VersionCommand: AsyncParsableCommand {
         // Parse hints from either JSON or individual options
         let (germanHint, englishHint) = try parseHints()
 
-        // Retrieve credentials from keychain
-        let service = KeychainHelper.service
-
-        guard let issuerID = KeychainHelper.getKeychainItem(service: service, account: "issuerID") else {
-            throw ValidationError("issuerID not found in keychain. Please run 'asc init' first.")
-        }
-
-        guard let keyID = KeychainHelper.getKeychainItem(service: service, account: "keyID") else {
-            throw ValidationError("keyID not found in keychain. Please run 'asc init' first.")
-        }
-
-        guard let privateKey = KeychainHelper.getKeychainItem(service: service, account: "privateKey") else {
-            throw ValidationError("privateKey not found in keychain. Please run 'asc init' first.")
-        }
-
+        let provider = try KeychainHelper.createAPIProvider()
         print("🔑 Retrieved credentials from keychain")
-
-        // Configure authentication
-        let configuration = APIConfiguration(
-            issuerID: issuerID,
-            privateKeyID: keyID,
-            privateKey: privateKey
-        )
-
-        let provider = APIProvider(configuration: configuration)
 
         // Check if appID is a bundle ID (contains dots) and convert to App ID if needed
         var resolvedAppID = appID
         if appID.contains(".") {
             print("🔍 Resolving bundle ID '\(appID)' to App ID...")
-            resolvedAppID = try await resolveAppID(provider: provider, bundleID: appID)
+            resolvedAppID = try await KeychainHelper.resolveAppID(provider: provider, bundleID: appID)
             print("✅ Found App ID: \(resolvedAppID)")
         }
 
@@ -153,29 +130,6 @@ struct VersionCommand: AsyncParsableCommand {
         }
 
         return (german, english)
-    }
-
-    private func resolveAppID(provider: APIProvider, bundleID: String) async throws -> String {
-        let endpoint: APIEndpoint<AppsResponse> = .apps(
-            select: [.apps([.name, .bundleId])],
-            filters: [.bundleId([bundleID])],
-            limits: [.apps(1)]
-        )
-
-        return try await withCheckedThrowingContinuation { continuation in
-            provider.request(endpoint) { (result: Result<AppsResponse, Error>) in
-                switch result {
-                case .success(let response):
-                    guard let app = response.data.first else {
-                        continuation.resume(throwing: ValidationError("No app found with bundle ID '\(bundleID)'"))
-                        return
-                    }
-                    continuation.resume(returning: app.id)
-                case .failure(let error):
-                    continuation.resume(throwing: error)
-                }
-            }
-        }
     }
 
     private func createOrFindVersion(
@@ -349,37 +303,6 @@ struct VersionCommand: AsyncParsableCommand {
                     continuation.resume()
                 case .failure(let error):
                     continuation.resume(throwing: error)
-                }
-            }
-        }
-    }
-
-    private func listExistingVersions(
-        provider: APIProvider,
-        appID: String,
-        platform: AppStoreVersionCreateRequest.Data.Attributes.Platform
-    ) async throws -> [(versionString: String, state: String?)] {
-        try await withCheckedThrowingContinuation { continuation in
-            let endpoint: APIEndpoint<AppStoreVersionsResponse> = .appStoreVersions(
-                ofAppWithId: appID,
-                fields: [.appStoreVersions([.versionString, .platform, .appStoreState])],
-                limit: 10
-            )
-
-            provider.request(endpoint) { (result: Result<AppStoreVersionsResponse, Error>) in
-                switch result {
-                case .success(let response):
-                    let versions = response.data
-                        .filter { $0.attributes?.platform?.rawValue == platform.rawValue }
-                        .compactMap { version -> (String, String?)? in
-                            guard let versionString = version.attributes?.versionString else { return nil }
-                            let state = version.attributes?.appStoreState?.rawValue
-                            return (versionString, state)
-                        }
-                    continuation.resume(returning: versions)
-                case .failure:
-                    // If we can't list versions, just return empty array
-                    continuation.resume(returning: [])
                 }
             }
         }

@@ -15,7 +15,6 @@ struct ASC: AsyncParsableCommand {
             InitCommand.self,
             VersionCommand.self,
             ShowCommand.self,
-            SubmitCommand.self,
             SelectBuildCommand.self,
             ListAppsCommand.self,
             ClearCommand.self

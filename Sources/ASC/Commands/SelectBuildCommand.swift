@@ -21,19 +21,21 @@ struct SelectBuildCommand: AsyncParsableCommand {
     @Argument(help: "The version string to select a build for (e.g., 1.0.0)")
     var version: String
 
-    @Option(help: "Platform (ios or macos)")
-    var platform: String = "ios"
+    @Option(help: "Platform (ios, macos, or both)")
+    var platform: String = "both"
 
     func run() async throws {
-        // Parse platform
-        let platformValue: AppStoreVersionCreateRequest.Data.Attributes.Platform
+        // Determine which platforms to process
+        let platforms: [(name: String, value: AppStoreVersionCreateRequest.Data.Attributes.Platform)]
         switch platform.lowercased() {
         case "ios":
-            platformValue = .iOS
+            platforms = [("iOS", .iOS)]
         case "macos":
-            platformValue = .macOS
+            platforms = [("macOS", .macOS)]
+        case "both":
+            platforms = [("iOS", .iOS), ("macOS", .macOS)]
         default:
-            throw ValidationError("Invalid platform. Use 'ios' or 'macos'")
+            throw ValidationError("Invalid platform. Use 'ios', 'macos', or 'both'")
         }
 
         // Retrieve credentials from keychain
@@ -67,27 +69,30 @@ struct SelectBuildCommand: AsyncParsableCommand {
             resolvedAppID = try await resolveAppID(provider: provider, bundleID: appID)
         }
 
-        // Find the version ID
-        print("🔍 Finding version \(version)...")
-        let versionID = try await findVersion(provider: provider, appID: resolvedAppID, versionString: version, platform: platformValue)
+        // Process each platform
+        for (platformName, platformValue) in platforms {
+            print("\n📱 Processing \(platformName)...")
 
-        guard let versionID = versionID else {
-            throw ValidationError("Version \(version) not found for platform \(platform)")
+            // Find the version ID
+            print("🔍 Finding version \(version)...")
+            guard let versionID = try await findVersion(provider: provider, appID: resolvedAppID, versionString: version, platform: platformValue) else {
+                print("⚠️  Version \(version) not found for platform \(platformName)")
+                continue
+            }
+
+            // Get the newest build
+            print("🔍 Finding newest build for version \(version)...")
+            guard let buildID = try await getNewestBuild(provider: provider, appID: resolvedAppID, platform: platformValue) else {
+                print("⚠️  No builds found for this app and platform \(platformName)")
+                continue
+            }
+
+            // Assign the build to the version
+            print("🔗 Assigning build to version...")
+            try await assignBuildToVersion(provider: provider, versionID: versionID, buildID: buildID)
+
+            print("✅ Successfully assigned newest build to version \(version) for \(platformName)")
         }
-
-        // Get the newest build
-        print("🔍 Finding newest build for version \(version)...")
-        let buildID = try await getNewestBuild(provider: provider, appID: resolvedAppID, platform: platformValue)
-
-        guard let buildID = buildID else {
-            throw ValidationError("No builds found for this app and platform")
-        }
-
-        // Assign the build to the version
-        print("🔗 Assigning build to version...")
-        try await assignBuildToVersion(provider: provider, versionID: versionID, buildID: buildID)
-
-        print("✅ Successfully assigned newest build to version \(version)")
     }
 
     private func resolveAppID(provider: APIProvider, bundleID: String) async throws -> String {
@@ -148,27 +153,32 @@ struct SelectBuildCommand: AsyncParsableCommand {
         platform: AppStoreVersionCreateRequest.Data.Attributes.Platform
     ) async throws -> String? {
         try await withCheckedThrowingContinuation { continuation in
+            // Map platform to API filter enum
+            let platformFilter: [ListBuilds.Filter.PreReleaseVersionPlatform]
+            switch platform {
+            case .iOS:
+                platformFilter = [.IOS]
+            case .macOS:
+                platformFilter = [.MAC_OS]
+            default:
+                // Handle other platforms if needed
+                platformFilter = []
+            }
+
             let endpoint: APIEndpoint<BuildsResponse> = .builds(
-                ofAppWithId: appID,
-                fields: [.builds([.version, .uploadedDate, .processingState])],
-                limit: 50
+                filter: [
+                    .app([appID]),
+                    .preReleaseVersionPlatform(platformFilter)
+                ],
+                sort: [.uploadedDateDescending]
             )
 
             provider.request(endpoint) { (result: Result<BuildsResponse, Error>) in
                 switch result {
                 case .success(let response):
-                    // Sort builds by uploaded date to get the newest one
-                    let sortedBuilds = response.data.sorted { (build1, build2) -> Bool in
-                        guard let date1 = build1.attributes?.uploadedDate,
-                              let date2 = build2.attributes?.uploadedDate else {
-                            return false
-                        }
-                        return date1 > date2
-                    }
-
-                    if let build = sortedBuilds.first {
+                    if let build = response.data.first {
                         if let version = build.attributes?.version {
-                            print("  Found build version: \(version)")
+                            print("  Found build version: \(version) for platform: \(platform)")
                         }
                         continuation.resume(returning: build.id)
                     } else {

@@ -20,7 +20,6 @@ The `issuerID`, `keyID` and `privateKey` will be saved in the keychain.
 - 🔍 Support for both App ID (numeric) and Bundle ID (e.g., com.example.app)
 - 🔐 Secure credential storage in macOS Keychain
 - 📊 Display current version states and release notes
-- 📤 Submit versions for Apple review
 - 🔗 Select and assign builds to versions
 
 ## Installation
@@ -140,18 +139,6 @@ This will display:
   State: READY_FOR_SALE
 ```
 
-### Submit version for review
-
-Submit the current version in PREPARE_FOR_SUBMISSION state for Apple review:
-
-```bash
-# Submit iOS version
-asc submit com.example.myapp
-
-# Submit macOS version
-asc submit com.example.myapp --platform macos
-```
-
 ### Select build for version
 
 Assign the newest build to a specific version:
@@ -198,10 +185,7 @@ asc show com.example.myapp
 # 5. Select the newest build for the version
 asc select-build com.example.myapp 2.1.0
 
-# 6. Submit the version for review
-asc submit com.example.myapp
-
-# 7. If needed later, clear credentials
+# 6. If needed later, clear credentials
 asc clear
 ```
 
@@ -213,7 +197,6 @@ asc clear
 | `list-apps` | List all apps in your App Store Connect account |
 | `version` | Create or update a version with release notes |
 | `show` | Display current versions and their states |
-| `submit` | Submit a version for Apple review |
 | `select-build` | Assign the newest build to a version |
 | `clear` | Remove stored credentials from keychain |
 

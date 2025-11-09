@@ -34,7 +34,7 @@ struct ListAppsCommand: AsyncParsableCommand {
         print("🔑 Retrieved credentials from keychain")
 
         // Configure authentication
-        let configuration = APIConfiguration(
+        let configuration = try APIConfiguration(
             issuerID: issuerID,
             privateKeyID: keyID,
             privateKey: privateKey
@@ -65,27 +65,20 @@ struct ListAppsCommand: AsyncParsableCommand {
     }
 
     private func listApps(provider: APIProvider) async throws -> [(id: String, name: String, bundleID: String)] {
-        try await withCheckedThrowingContinuation { continuation in
-            let endpoint: APIEndpoint<AppsResponse> = .apps(
-                select: [.apps([.name, .bundleId])],
-                limits: [.apps(200)]
-            )
+        var parameters = APIEndpoint.V1.Apps.GetParameters()
+        parameters.fieldsApps = [.name, .bundleID]
+        parameters.limit = 200
 
-            provider.request(endpoint) { (result: Result<AppsResponse, Error>) in
-                switch result {
-                case .success(let response):
-                    let apps = response.data.map { app in
-                        (
-                            id: app.id,
-                            name: app.attributes?.name ?? "Unknown",
-                            bundleID: app.attributes?.bundleId ?? "Unknown"
-                        )
-                    }
-                    continuation.resume(returning: apps)
-                case .failure(let error):
-                    continuation.resume(throwing: error)
-                }
-            }
+        let request = APIEndpoint.v1.apps.get(parameters: parameters)
+        let response = try await provider.request(request)
+
+        let apps = response.data.map { app in
+            (
+                id: app.id,
+                name: app.attributes?.name ?? "Unknown",
+                bundleID: app.attributes?.bundleID ?? "Unknown"
+            )
         }
+        return apps
     }
 }

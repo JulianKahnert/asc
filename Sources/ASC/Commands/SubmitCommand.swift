@@ -64,7 +64,7 @@ struct SubmitCommand: AsyncParsableCommand {
             // Submit version for review
             print("📤 Submitting version \(versionString) for review...")
             do {
-                try await submitVersion(provider: provider, appID: resolvedAppID, platform: platformValue)
+                try await submitVersion(provider: provider, appID: resolvedAppID, platform: platformValue, versionID: versionID)
                 print("✅ Successfully submitted \(platformName) version \(versionString) for review")
             } catch {
                 let errorString = String(describing: error)
@@ -117,10 +117,11 @@ struct SubmitCommand: AsyncParsableCommand {
     private func submitVersion(
         provider: APIProvider,
         appID: String,
-        platform: Platform
+        platform: Platform,
+        versionID: String
     ) async throws {
-        // Use the new ReviewSubmission API (replaces deprecated AppStoreVersionSubmission)
-        let requestBody = ReviewSubmissionCreateRequest(
+        // Step 1: Create ReviewSubmission (container for app/platform)
+        let reviewSubmissionRequest = ReviewSubmissionCreateRequest(
             data: .init(
                 type: .reviewSubmissions,
                 attributes: .init(platform: platform),
@@ -135,7 +136,34 @@ struct SubmitCommand: AsyncParsableCommand {
             )
         )
 
-        let request = APIEndpoint.v1.reviewSubmissions.post(requestBody)
-        _ = try await provider.request(request)
+        let createRequest = APIEndpoint.v1.reviewSubmissions.post(reviewSubmissionRequest)
+        let reviewSubmissionResponse = try await provider.request(createRequest)
+        let reviewSubmissionID = reviewSubmissionResponse.data.id
+
+        print("  Created review submission with ID: \(reviewSubmissionID)")
+
+        // Step 2: Add ReviewSubmissionItem (the actual version to be reviewed)
+        let itemRequest = ReviewSubmissionItemCreateRequest(
+            data: .init(
+                type: .reviewSubmissionItems,
+                relationships: .init(
+                    reviewSubmission: .init(
+                        data: .init(
+                            type: .reviewSubmissions,
+                            id: reviewSubmissionID
+                        )
+                    ),
+                    appStoreVersion: .init(
+                        data: .init(
+                            type: .appStoreVersions,
+                            id: versionID
+                        )
+                    )
+                )
+            )
+        )
+
+        let addItemRequest = APIEndpoint.v1.reviewSubmissionItems.post(itemRequest)
+        _ = try await provider.request(addItemRequest)
     }
 }

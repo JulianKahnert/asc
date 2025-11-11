@@ -16,31 +16,10 @@ struct ListAppsCommand: AsyncParsableCommand {
     )
 
     func run() async throws {
-        // Retrieve credentials from keychain
-        let service = KeychainHelper.service
+        print("🔑 Retrieving credentials from keychain...")
 
-        guard let issuerID = KeychainHelper.getKeychainItem(service: service, account: "issuerID") else {
-            throw ValidationError("issuerID not found in keychain. Please run 'asc init' first.")
-        }
-
-        guard let keyID = KeychainHelper.getKeychainItem(service: service, account: "keyID") else {
-            throw ValidationError("keyID not found in keychain. Please run 'asc init' first.")
-        }
-
-        guard let privateKey = KeychainHelper.getKeychainItem(service: service, account: "privateKey") else {
-            throw ValidationError("privateKey not found in keychain. Please run 'asc init' first.")
-        }
-
-        print("🔑 Retrieved credentials from keychain")
-
-        // Configure authentication
-        let configuration = try APIConfiguration(
-            issuerID: issuerID,
-            privateKeyID: keyID,
-            privateKey: privateKey
-        )
-
-        let provider = APIProvider(configuration: configuration)
+        // Use the centralized API provider creation
+        let provider = try KeychainHelper.createAPIProvider()
 
         print("📱 Fetching apps from App Store Connect...\n")
 

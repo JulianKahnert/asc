@@ -14,8 +14,8 @@ struct InitCommand: AsyncParsableCommand {
         abstract: "Initialize App Store Connect credentials"
     )
 
-    @Option(name: .customLong("issuerID"), help: "The issuer ID from App Store Connect")
-    var issuerID: String
+    @Option(name: .customLong("issuerID"), help: "The issuer ID from App Store Connect (optional, only for team keys)")
+    var issuerID: String?
 
     @Option(name: .customLong("keyID"), help: "The key ID from App Store Connect")
     var keyID: String
@@ -43,8 +43,16 @@ struct InitCommand: AsyncParsableCommand {
         // Store credentials in keychain
         let service = KeychainHelper.service
 
-        guard KeychainHelper.addKeychainItem(service: service, account: "issuerID", data: issuerID) else {
-            throw ValidationError("Failed to store issuerID in keychain")
+        // Store issuerID if provided (team key), otherwise delete it (individual key)
+        if let issuerID = issuerID {
+            guard KeychainHelper.addKeychainItem(service: service, account: "issuerID", data: issuerID) else {
+                throw ValidationError("Failed to store issuerID in keychain")
+            }
+            print("ℹ️  Using team API key (with issuerID)")
+        } else {
+            // Delete any existing issuerID to ensure we use individual key mode
+            _ = KeychainHelper.deleteKeychainItem(service: service, account: "issuerID")
+            print("ℹ️  Using individual API key (without issuerID)")
         }
 
         guard KeychainHelper.addKeychainItem(service: service, account: "keyID", data: keyID) else {

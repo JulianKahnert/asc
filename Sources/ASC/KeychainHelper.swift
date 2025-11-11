@@ -15,7 +15,9 @@ enum KeychainHelper {
 
     static func addKeychainItem(service: String, account: String, data: String) -> Bool {
         let data = data.data(using: .utf8)!
-        let query: [String: Any] = [
+
+        // Try with iCloud sync first
+        var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
@@ -23,9 +25,22 @@ enum KeychainHelper {
             kSecAttrSynchronizable as String: true
         ]
 
-        // Lösche das bestehende Element, falls es existiert
+        // Delete existing item with sync enabled
         SecItemDelete(query as CFDictionary)
-        let status = SecItemAdd(query as CFDictionary, nil)
+        var status = SecItemAdd(query as CFDictionary, nil)
+
+        // If iCloud sync failed, try without sync (local only)
+        if status != errSecSuccess {
+            print("⚠️  iCloud Keychain sync not available, storing credentials locally only")
+
+            // Update query to store locally
+            query[kSecAttrSynchronizable as String] = false
+
+            // Delete existing local item if any
+            SecItemDelete(query as CFDictionary)
+            status = SecItemAdd(query as CFDictionary, nil)
+        }
+
         return status == errSecSuccess
     }
 
@@ -64,10 +79,6 @@ enum KeychainHelper {
     }
 
     static func createAPIProvider() throws -> APIProvider {
-        guard let issuerID = getKeychainItem(service: service, account: "issuerID") else {
-            throw ValidationError("issuerID not found in keychain. Please run 'asc init' first.")
-        }
-
         guard let keyID = getKeychainItem(service: service, account: "keyID") else {
             throw ValidationError("keyID not found in keychain. Please run 'asc init' first.")
         }
@@ -76,11 +87,24 @@ enum KeychainHelper {
             throw ValidationError("privateKey not found in keychain. Please run 'asc init' first.")
         }
 
-        let configuration = try APIConfiguration(
-            issuerID: issuerID,
-            privateKeyID: keyID,
-            privateKey: privateKey
-        )
+        // Check if issuerID exists to determine which authentication mode to use
+        let issuerID = getKeychainItem(service: service, account: "issuerID")
+
+        let configuration: APIConfiguration
+        if let issuerID = issuerID {
+            // Team API Key mode (with issuerID)
+            configuration = try APIConfiguration(
+                issuerID: issuerID,
+                privateKeyID: keyID,
+                privateKey: privateKey
+            )
+        } else {
+            // Individual API Key mode (without issuerID)
+            configuration = try APIConfiguration(
+                individualPrivateKeyID: keyID,
+                individualPrivateKey: privateKey
+            )
+        }
 
         return APIProvider(configuration: configuration)
     }

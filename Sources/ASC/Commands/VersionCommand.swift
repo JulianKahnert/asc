@@ -48,55 +48,56 @@ struct VersionCommand: AsyncParsableCommand {
         print("📱 Creating/updating version \(version) for app \(resolvedAppID)...")
 
         do {
-            // Try to create or find existing iOS version
-            print("📱 Creating/finding iOS version...")
-            let iOSVersionID = try await createOrFindVersion(
+            // Check which platforms have already been released
+            print("🔍 Checking which platforms have been released...")
+            let releasedPlatforms = try await getReleasedPlatforms(
                 provider: provider,
-                appID: resolvedAppID,
-                versionString: version,
-                platform: .ios
-            )
-            print("✅ iOS version ID: \(iOSVersionID)")
-
-            // Try to create or find existing macOS version
-            print("💻 Creating/finding macOS version...")
-            let macOSVersionID = try await createOrFindVersion(
-                provider: provider,
-                appID: resolvedAppID,
-                versionString: version,
-                platform: .macOs
-            )
-            print("✅ macOS version ID: \(macOSVersionID)")
-
-            // Update localizations for iOS
-            print("📝 Updating iOS release notes...")
-            try await updateOrCreateLocalization(
-                provider: provider,
-                versionID: iOSVersionID,
-                locale: "de-DE",
-                whatsNew: germanHint
-            )
-            try await updateOrCreateLocalization(
-                provider: provider,
-                versionID: iOSVersionID,
-                locale: "en-US",
-                whatsNew: englishHint
+                appID: resolvedAppID
             )
 
-            // Update localizations for macOS
-            print("📝 Updating macOS release notes...")
-            try await updateOrCreateLocalization(
-                provider: provider,
-                versionID: macOSVersionID,
-                locale: "de-DE",
-                whatsNew: germanHint
-            )
-            try await updateOrCreateLocalization(
-                provider: provider,
-                versionID: macOSVersionID,
-                locale: "en-US",
-                whatsNew: englishHint
-            )
+            if releasedPlatforms.isEmpty {
+                print("⚠️  No platforms have been released yet for this app")
+                print("❌ Cannot create version - no platforms to create version for")
+                throw ValidationError("No platforms have been released yet for this app. Please release the app on at least one platform first.")
+            }
+
+            print("✅ Found released platforms: \(releasedPlatforms.map { $0.rawValue }.joined(separator: ", "))")
+
+            var versionIDs: [(platform: Platform, id: String)] = []
+
+            // Only create versions for platforms that have been released
+            for platform in releasedPlatforms {
+                let platformEmoji = platform == .ios ? "📱" : "💻"
+                let platformName = platform == .ios ? "iOS" : "macOS"
+
+                print("\(platformEmoji) Creating/finding \(platformName) version...")
+                let versionID = try await createOrFindVersion(
+                    provider: provider,
+                    appID: resolvedAppID,
+                    versionString: version,
+                    platform: platform
+                )
+                print("✅ \(platformName) version ID: \(versionID)")
+                versionIDs.append((platform: platform, id: versionID))
+            }
+
+            // Update localizations for all created/found versions
+            for (platform, versionID) in versionIDs {
+                let platformName = platform == .ios ? "iOS" : "macOS"
+                print("📝 Updating \(platformName) release notes...")
+                try await updateOrCreateLocalization(
+                    provider: provider,
+                    versionID: versionID,
+                    locale: "de-DE",
+                    whatsNew: germanHint
+                )
+                try await updateOrCreateLocalization(
+                    provider: provider,
+                    versionID: versionID,
+                    locale: "en-US",
+                    whatsNew: englishHint
+                )
+            }
 
             print("✅ Successfully updated versions with release notes")
         } catch {
@@ -130,6 +131,36 @@ struct VersionCommand: AsyncParsableCommand {
         }
 
         return (german, english)
+    }
+
+    private func getReleasedPlatforms(
+        provider: APIProvider,
+        appID: String
+    ) async throws -> [Platform] {
+        var parameters = APIEndpoint.V1.Apps.WithID.AppStoreVersions.GetParameters()
+        parameters.fieldsAppStoreVersions = [.platform, .appStoreState]
+        parameters.limit = 200
+
+        let request = APIEndpoint.v1.apps.id(appID).appStoreVersions.get(parameters: parameters)
+        let response = try await provider.request(request)
+
+        // Find all unique platforms that have at least one version in READY_FOR_SALE state
+        // This indicates the app has been released on that platform
+        var releasedPlatforms = Set<Platform>()
+
+        for version in response.data {
+            guard let state = version.attributes?.appStoreState,
+                  let platform = version.attributes?.platform else {
+                continue
+            }
+
+            // If any version is in READY_FOR_SALE state, the platform has been released
+            if state == .readyForSale {
+                releasedPlatforms.insert(platform)
+            }
+        }
+
+        return Array(releasedPlatforms).sorted { $0.rawValue < $1.rawValue }
     }
 
     private func createOrFindVersion(

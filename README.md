@@ -3,6 +3,8 @@
 ![Swift](https://img.shields.io/badge/Swift-6.2+-orange.svg)
 ![Platform](https://img.shields.io/badge/Platform-macOS%2015.0+-lightgrey.svg)
 
+> **Note:** This project is completely AI-generated and serves as a test to see how well AI-assisted development works in practice.
+
 This tool helps you creating a new version in App Store Connect and updating version information.
 The `issuerID`, `keyID` and `privateKey` will be saved in the keychain.
 

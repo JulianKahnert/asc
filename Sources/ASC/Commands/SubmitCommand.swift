@@ -198,7 +198,29 @@ struct SubmitCommand: AsyncParsableCommand {
 
             let addItemRequest = APIEndpoint.v1.reviewSubmissionItems.post(itemRequest)
             _ = try await provider.request(addItemRequest)
+
+            // Actually submit the review submission
+            print("    Submitting review submission for review...")
+            try await submitReviewSubmission(provider: provider, reviewSubmissionID: reviewSubmissionID)
+            print("    ✅ Submitted to App Store Review")
         }
+    }
+
+    private func submitReviewSubmission(
+        provider: APIProvider,
+        reviewSubmissionID: String
+    ) async throws {
+        // Update the ReviewSubmission state to submit it
+        let updateRequest = ReviewSubmissionUpdateRequest(
+            data: .init(
+                type: .reviewSubmissions,
+                id: reviewSubmissionID,
+                attributes: .init(isSubmitted: true)
+            )
+        )
+
+        let request = APIEndpoint.v1.reviewSubmissions.id(reviewSubmissionID).patch(updateRequest)
+        _ = try await provider.request(request)
     }
 
     private func findExistingReviewSubmission(

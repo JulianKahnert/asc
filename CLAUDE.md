@@ -25,16 +25,12 @@ Currently no test suite is configured. Consider adding tests in the future.
 
 ## Architecture
 
-The application uses Swift ArgumentParser to provide a command-line interface with four main commands:
+The application uses Swift ArgumentParser to provide a command-line interface.
 
 ### Command Structure
 
 - **ASC.swift**: Main entry point defining the ArgumentParser configuration with all subcommands
-- **Commands/**: Each command is a separate struct conforming to `AsyncParsableCommand`
-  - `InitCommand`: Stores App Store Connect API credentials in keychain
-  - `VersionCommand`: Complex workflow for creating/updating versions and localizations
-  - `ListAppsCommand`: Lists all apps in the account
-  - `ClearCommand`: Removes stored credentials from keychain
+- **Commands/**: Each command is a separate struct conforming to `AsyncParsableCommand` (see `Sources/ASC/Commands/` for all current commands)
 - **KeychainHelper.swift**: Centralized keychain operations with static service identifier `"de.JulianKahnert.asc"`
 
 ### Key Dependencies
@@ -64,23 +60,6 @@ The `version` command handles complex scenarios:
    - Active states considered: `PREPARE_FOR_SUBMISSION`, `WAITING_FOR_REVIEW`, `IN_REVIEW`, `PENDING_DEVELOPER_RELEASE`
 
 4. **Localization Updates**: For each platform version, creates or updates localizations for both `de-DE` and `en-US` locales via `updateOrCreateLocalization()`.
-
-### Async/Await Bridging
-
-The App Store Connect SDK uses callback-based APIs. All async operations use `withCheckedThrowingContinuation` to bridge callbacks to Swift's async/await:
-
-```swift
-try await withCheckedThrowingContinuation { continuation in
-    provider.request(endpoint) { result in
-        switch result {
-        case .success(let response):
-            continuation.resume(returning: response.data.id)
-        case .failure(let error):
-            continuation.resume(throwing: error)
-        }
-    }
-}
-```
 
 ## Platform Requirements
 

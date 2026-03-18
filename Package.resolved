@@ -1,5 +1,5 @@
 {
-  "originHash" : "8e277432db10df4fd01ee1d1ebe71af72eb2a6dcb85284135a17fa63b64d4c6e",
+  "originHash" : "579b539023d248b4852d893654067ee93216f8f46215a52aef76f9a1f9a86bde",
   "pins" : [
     {
       "identity" : "appstoreconnect-swift-sdk",
@@ -15,8 +15,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/apple/swift-argument-parser.git",
       "state" : {
-        "revision" : "cdd0ef3755280949551dc26dee5de9ddeda89f54",
-        "version" : "1.6.2"
+        "revision" : "c5d11a805e765f52ba34ec7284bd4fcd6ba68615",
+        "version" : "1.7.0"
       }
     },
     {

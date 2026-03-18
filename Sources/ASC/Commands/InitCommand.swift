@@ -1,17 +1,15 @@
-//
-//  InitCommand.swift
-//  ASC
-//
-//  Created by Julian Kahnert on 07.11.25.
-//
-
 import ArgumentParser
 import Foundation
 
 struct InitCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "init",
-        abstract: "Initialize App Store Connect credentials"
+        abstract: "Initialize App Store Connect credentials.",
+        discussion: """
+            Examples:
+              $ asc init --keyID ABC123 --privateKeyFile ~/AuthKey.p8
+              $ asc init --issuerID 12345 --keyID ABC123 --privateKeyFile ~/AuthKey.p8
+            """
     )
 
     @Option(name: .customLong("issuerID"), help: "The issuer ID from App Store Connect (optional, only for team keys)")

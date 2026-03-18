@@ -1,113 +1,104 @@
-//
-//  VersionCommand.swift
-//  ASC
-//
-//  Created by Julian Kahnert on 07.11.25.
-//
-
 import ArgumentParser
 import AppStoreConnect_Swift_SDK
 import Foundation
 
-struct VersionCommand: AsyncParsableCommand {
+/// Creates or updates an app version with release notes for all released platforms.
+struct VersionCreateCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
-        commandName: "version",
-        abstract: "Create or update an app version with release notes"
+        commandName: "create",
+        abstract: "Create or update an app version with release notes.",
+        discussion: """
+            Examples:
+              $ asc versions create com.example.app 1.2.0 --hint '{"german": "Fehlerbehebungen", "english": "Bug fixes"}'
+              $ asc versions create 123456789 2.0.0 --hintGerman "Neu" --hintEnglish "New"
+            """
     )
 
-    @Argument(help: "The App ID from App Store Connect")
+    @Argument(help: "The App ID or Bundle ID from App Store Connect.")
     var appID: String
 
-    @Argument(help: "The version string (e.g., 1.0.0)")
+    @Argument(help: "The version string (e.g., 1.0.0).")
     var version: String
 
-    @Option(name: .customLong("hintGerman"), help: "German release notes")
+    @Option(name: .customLong("hintGerman"), help: "German release notes.")
     var hintGerman: String?
 
-    @Option(name: .customLong("hintEnglish"), help: "English release notes")
+    @Option(name: .customLong("hintEnglish"), help: "English release notes.")
     var hintEnglish: String?
 
-    @Option(name: .customLong("hint"), help: "JSON string with 'german' and 'english' keys containing release notes")
+    @Option(name: .customLong("hint"), help: "JSON string with 'german' and 'english' keys containing release notes.")
     var hintJSON: String?
 
     func run() async throws {
-        // Parse hints from either JSON or individual options
         let (germanHint, englishHint) = try parseHints()
 
         let provider = try KeychainHelper.createAPIProvider()
-        print("🔑 Retrieved credentials from keychain")
+        let resolvedAppID = try await KeychainHelper.resolveAppID(provider: provider, appIDOrBundleID: appID)
 
-        // Check if appID is a bundle ID (contains dots) and convert to App ID if needed
-        var resolvedAppID = appID
-        if appID.contains(".") {
-            print("🔍 Resolving bundle ID '\(appID)' to App ID...")
-            resolvedAppID = try await KeychainHelper.resolveAppID(provider: provider, bundleID: appID)
-            print("✅ Found App ID: \(resolvedAppID)")
+        try await Self.execute(
+            provider: provider,
+            appID: resolvedAppID,
+            version: version,
+            germanHint: germanHint,
+            englishHint: englishHint
+        )
+    }
+
+    static func execute(
+        provider: APIProvider,
+        appID: String,
+        version: String,
+        germanHint: String,
+        englishHint: String
+    ) async throws {
+        print("📱 Creating/updating version \(version) for app \(appID)...")
+
+        print("🔍 Checking which platforms have been released...")
+        let releasedPlatforms = try await getReleasedPlatforms(
+            provider: provider,
+            appID: appID
+        )
+
+        if releasedPlatforms.isEmpty {
+            throw ValidationError("No platforms have been released yet for this app. Please release the app on at least one platform first.")
         }
 
-        print("📱 Creating/updating version \(version) for app \(resolvedAppID)...")
+        print("✅ Found released platforms: \(releasedPlatforms.map { $0.rawValue }.joined(separator: ", "))")
 
-        do {
-            // Check which platforms have already been released
-            print("🔍 Checking which platforms have been released...")
-            let releasedPlatforms = try await getReleasedPlatforms(
+        var versionIDs: [(platform: Platform, id: String)] = []
+
+        for platform in releasedPlatforms {
+            print("Creating/finding \(platform.name) version...")
+            let versionID = try await createOrFindVersion(
                 provider: provider,
-                appID: resolvedAppID
+                appID: appID,
+                versionString: version,
+                platform: platform
             )
-
-            if releasedPlatforms.isEmpty {
-                print("⚠️  No platforms have been released yet for this app")
-                print("❌ Cannot create version - no platforms to create version for")
-                throw ValidationError("No platforms have been released yet for this app. Please release the app on at least one platform first.")
-            }
-
-            print("✅ Found released platforms: \(releasedPlatforms.map { $0.rawValue }.joined(separator: ", "))")
-
-            var versionIDs: [(platform: Platform, id: String)] = []
-
-            // Only create versions for platforms that have been released
-            for platform in releasedPlatforms {
-                let platformEmoji = platform == .ios ? "📱" : "💻"
-                let platformName = platform == .ios ? "iOS" : "macOS"
-
-                print("\(platformEmoji) Creating/finding \(platformName) version...")
-                let versionID = try await createOrFindVersion(
-                    provider: provider,
-                    appID: resolvedAppID,
-                    versionString: version,
-                    platform: platform
-                )
-                print("✅ \(platformName) version ID: \(versionID)")
-                versionIDs.append((platform: platform, id: versionID))
-            }
-
-            // Update localizations for all created/found versions
-            for (platform, versionID) in versionIDs {
-                let platformName = platform == .ios ? "iOS" : "macOS"
-                print("📝 Updating \(platformName) release notes...")
-                try await updateOrCreateLocalization(
-                    provider: provider,
-                    versionID: versionID,
-                    locale: "de-DE",
-                    whatsNew: germanHint
-                )
-                try await updateOrCreateLocalization(
-                    provider: provider,
-                    versionID: versionID,
-                    locale: "en-US",
-                    whatsNew: englishHint
-                )
-            }
-
-            print("✅ Successfully updated versions with release notes")
-        } catch {
-            print("❌ Error: \(error)")
-            throw error
+            print("✅ \(platform.name) version ID: \(versionID)")
+            versionIDs.append((platform: platform, id: versionID))
         }
+
+        for (platform, versionID) in versionIDs {
+            print("📝 Updating \(platform.name) release notes...")
+            try await updateOrCreateLocalization(
+                provider: provider,
+                versionID: versionID,
+                locale: "de-DE",
+                whatsNew: germanHint
+            )
+            try await updateOrCreateLocalization(
+                provider: provider,
+                versionID: versionID,
+                locale: "en-US",
+                whatsNew: englishHint
+            )
+        }
+
+        print("✅ Successfully updated versions with release notes")
     }
 
     private func parseHints() throws -> (german: String, english: String) {
-        // If JSON hint is provided, parse it
         if let jsonString = hintJSON {
             guard let jsonData = jsonString.data(using: .utf8) else {
                 throw ValidationError("Invalid JSON string encoding")
@@ -125,7 +116,6 @@ struct VersionCommand: AsyncParsableCommand {
             return (german, english)
         }
 
-        // Otherwise, use individual options
         guard let german = hintGerman, let english = hintEnglish else {
             throw ValidationError("Either provide --hint with JSON, or both --hintGerman and --hintEnglish")
         }
@@ -133,7 +123,7 @@ struct VersionCommand: AsyncParsableCommand {
         return (german, english)
     }
 
-    private func getReleasedPlatforms(
+    static func getReleasedPlatforms(
         provider: APIProvider,
         appID: String
     ) async throws -> [Platform] {
@@ -144,42 +134,23 @@ struct VersionCommand: AsyncParsableCommand {
         let request = APIEndpoint.v1.apps.id(appID).appStoreVersions.get(parameters: parameters)
         let response = try await provider.request(request)
 
-        // Find all unique platforms that have at least one version in READY_FOR_SALE state
-        // This indicates the app has been released on that platform
-        var releasedPlatforms = Set<Platform>()
-
-        for version in response.data {
-            guard let state = version.attributes?.appStoreState,
-                  let platform = version.attributes?.platform else {
-                continue
-            }
-
-            // If any version is in READY_FOR_SALE state, the platform has been released
-            if state == .readyForSale {
-                releasedPlatforms.insert(platform)
-            }
-        }
-
-        return Array(releasedPlatforms).sorted { $0.rawValue < $1.rawValue }
+        return VersionLogic.releasedPlatforms(from: response.data)
     }
 
-    private func createOrFindVersion(
+    static func createOrFindVersion(
         provider: APIProvider,
         appID: String,
         versionString: String,
         platform: Platform
     ) async throws -> String {
-        // Try to create the version
         do {
-            let versionID = try await createVersion(
+            return try await createVersion(
                 provider: provider,
                 appID: appID,
                 versionString: versionString,
                 platform: platform
             )
-            return versionID
         } catch {
-            // If it fails with 409 DUPLICATE, try to find the existing version
             let errorString = String(describing: error)
             if errorString.contains("409") && errorString.contains("DUPLICATE") {
                 print("   Version already exists, finding it...")
@@ -191,23 +162,20 @@ struct VersionCommand: AsyncParsableCommand {
                 )
             }
 
-            // Check if it's the "cannot create in current state" error
             if errorString.contains("409") && errorString.contains("You cannot create a new version of the App in the current state") {
                 print("   ⚠️  Cannot create new version - an active version already exists")
                 print("   🔍 Finding active version to update...")
 
-                // Find the current active version
                 let activeVersion = try await findActiveVersion(
                     provider: provider,
                     appID: appID,
                     platform: platform
                 )
 
-                if let activeVersion = activeVersion {
+                if let activeVersion {
                     print("   📝 Found active version \(activeVersion.versionString) (ID: \(activeVersion.id))")
                     print("   🔄 Updating version number from \(activeVersion.versionString) to \(versionString)...")
 
-                    // Update the version number
                     try await updateVersionNumber(
                         provider: provider,
                         versionID: activeVersion.id,
@@ -225,7 +193,7 @@ struct VersionCommand: AsyncParsableCommand {
         }
     }
 
-    private func createVersion(
+    static func createVersion(
         provider: APIProvider,
         appID: String,
         versionString: String,
@@ -255,7 +223,7 @@ struct VersionCommand: AsyncParsableCommand {
         return response.data.id
     }
 
-    private func findExistingVersion(
+    static func findExistingVersion(
         provider: APIProvider,
         appID: String,
         versionString: String,
@@ -268,44 +236,14 @@ struct VersionCommand: AsyncParsableCommand {
         let request = APIEndpoint.v1.apps.id(appID).appStoreVersions.get(parameters: parameters)
         let response = try await provider.request(request)
 
-        // Filter matching versions
-        let matchingVersions = response.data.filter {
-            $0.attributes?.versionString == versionString &&
-            $0.attributes?.platform == platform
-        }
-
-        guard !matchingVersions.isEmpty else {
+        guard let versionID = VersionLogic.selectVersion(from: response.data, versionString: versionString, platform: platform) else {
             throw ValidationError("Could not find existing version \(versionString) for platform \(platform.rawValue)")
         }
 
-        // Prioritize by state: active states first
-        let priorityStates = [
-            "PREPARE_FOR_SUBMISSION",
-            "WAITING_FOR_REVIEW",
-            "IN_REVIEW",
-            "PENDING_DEVELOPER_RELEASE",
-            "DEVELOPER_REJECTED",
-            "REJECTED"
-        ]
-
-        // Find version with highest priority state
-        for state in priorityStates {
-            if let version = matchingVersions.first(where: {
-                $0.attributes?.appStoreState?.rawValue == state
-            }) {
-                return version.id
-            }
-        }
-
-        // Fallback: return first matching version (e.g., READY_FOR_SALE)
-        if let version = matchingVersions.first {
-            return version.id
-        } else {
-            throw ValidationError("Could not find existing version \(versionString) for platform \(platform.rawValue)")
-        }
+        return versionID
     }
 
-    private func findActiveVersion(
+    static func findActiveVersion(
         provider: APIProvider,
         appID: String,
         platform: Platform
@@ -315,30 +253,24 @@ struct VersionCommand: AsyncParsableCommand {
         parameters.limit = 10
 
         let request = APIEndpoint.v1.apps.id(appID).appStoreVersions.get(parameters: parameters)
+        let response = try await provider.request(request)
 
-        do {
-            let response = try await provider.request(request)
-
-            // Find the first version that is in an active state (PREPARE_FOR_SUBMISSION, WAITING_FOR_REVIEW, IN_REVIEW)
-            let activeStates = ["PREPARE_FOR_SUBMISSION", "WAITING_FOR_REVIEW", "IN_REVIEW", "PENDING_DEVELOPER_RELEASE"]
-            let activeVersion = response.data
-                .filter { $0.attributes?.platform == platform }
-                .first { version in
-                    guard let state = version.attributes?.appStoreState?.rawValue else { return false }
-                    return activeStates.contains(state)
-                }
-
-            if let version = activeVersion, let versionString = version.attributes?.versionString {
-                return (id: version.id, versionString: versionString)
-            } else {
-                return nil
+        let activeStates = ["PREPARE_FOR_SUBMISSION", "WAITING_FOR_REVIEW", "IN_REVIEW", "PENDING_DEVELOPER_RELEASE"]
+        let activeVersion = response.data
+            .filter { $0.attributes?.platform == platform }
+            .first { version in
+                guard let state = version.attributes?.appStoreState?.rawValue else { return false }
+                return activeStates.contains(state)
             }
-        } catch {
+
+        guard let version = activeVersion,
+              let versionString = version.attributes?.versionString else {
             return nil
         }
+        return (id: version.id, versionString: versionString)
     }
 
-    private func updateVersionNumber(
+    static func updateVersionNumber(
         provider: APIProvider,
         versionID: String,
         newVersionString: String
@@ -355,18 +287,15 @@ struct VersionCommand: AsyncParsableCommand {
         _ = try await provider.request(apiRequest)
     }
 
-    private func updateOrCreateLocalization(
+    static func updateOrCreateLocalization(
         provider: APIProvider,
         versionID: String,
         locale: String,
         whatsNew: String
     ) async throws {
-        // First, try to get existing localizations
         let existingLocalizations = try await listLocalizations(provider: provider, versionID: versionID)
 
-        // Check if this locale already exists
         if let existingLocalization = existingLocalizations.first(where: { $0.locale == locale }) {
-            // Update existing localization
             try await updateLocalization(
                 provider: provider,
                 localizationID: existingLocalization.id,
@@ -374,7 +303,6 @@ struct VersionCommand: AsyncParsableCommand {
             )
             print("✅ Updated \(locale) localization")
         } else {
-            // Create new localization
             try await createLocalization(
                 provider: provider,
                 versionID: versionID,
@@ -384,23 +312,22 @@ struct VersionCommand: AsyncParsableCommand {
         }
     }
 
-    private func listLocalizations(
+    static func listLocalizations(
         provider: APIProvider,
         versionID: String
     ) async throws -> [(id: String, locale: String)] {
         let request = APIEndpoint.v1.appStoreVersions.id(versionID).appStoreVersionLocalizations.get()
         let response = try await provider.request(request)
 
-        let localizations = response.data.map { localization in
+        return response.data.map { localization in
             (
                 id: localization.id,
                 locale: localization.attributes?.locale ?? ""
             )
         }
-        return localizations
     }
 
-    private func updateLocalization(
+    static func updateLocalization(
         provider: APIProvider,
         localizationID: String,
         whatsNew: String
@@ -417,7 +344,7 @@ struct VersionCommand: AsyncParsableCommand {
         _ = try await provider.request(apiRequest)
     }
 
-    private func createLocalization(
+    static func createLocalization(
         provider: APIProvider,
         versionID: String,
         locale: String,

@@ -1,52 +1,42 @@
-//
-//  ShowCommand.swift
-//  ASC
-//
-//  Created by Julian Kahnert on 09.11.25.
-//
-
 import ArgumentParser
 import AppStoreConnect_Swift_SDK
 import Foundation
 
-struct ShowCommand: AsyncParsableCommand {
+/// Displays current prepared version and build info for an app.
+struct VersionShowCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "show",
-        abstract: "Display current prepared version and hints for an app"
+        abstract: "Display current prepared version and hints for an app.",
+        discussion: """
+            Examples:
+              $ asc versions show com.example.app
+              $ asc versions show 123456789
+            """
     )
 
-    @Argument(help: "The App ID or Bundle ID from App Store Connect")
+    @Argument(help: "The App ID or Bundle ID from App Store Connect.")
     var appID: String
 
     func run() async throws {
         let provider = try KeychainHelper.createAPIProvider()
+        let resolvedAppID = try await KeychainHelper.resolveAppID(provider: provider, appIDOrBundleID: appID)
 
-        // Check if appID is a bundle ID (contains dots) and convert to App ID if needed
-        var resolvedAppID = appID
-        if appID.contains(".") {
-            print("🔍 Resolving bundle ID '\(appID)' to App ID...")
-            resolvedAppID = try await KeychainHelper.resolveAppID(provider: provider, bundleID: appID)
-        }
-
-        // Fetch iOS version info
-        print("\n📱 iOS Versions:")
-        try await showVersionInfo(provider: provider, appID: resolvedAppID, platform: .ios)
-
-        // Fetch macOS version info
-        print("\n💻 macOS Versions:")
-        try await showVersionInfo(provider: provider, appID: resolvedAppID, platform: .macOs)
+        try await Self.execute(provider: provider, appID: resolvedAppID)
     }
 
-    private func showVersionInfo(
+    static func execute(provider: APIProvider, appID: String) async throws {
+        print("\n📱 iOS Versions:")
+        try await showVersionInfo(provider: provider, appID: appID, platform: .ios)
+
+        print("\n💻 macOS Versions:")
+        try await showVersionInfo(provider: provider, appID: appID, platform: .macOs)
+    }
+
+    static func showVersionInfo(
         provider: APIProvider,
         appID: String,
         platform: Platform
     ) async throws {
-        // Note: The SDK doesn't support the 'include' parameter for the list endpoint,
-        // but the API does support it. We need to make individual requests for each version
-        // to get build information. For now, we'll fetch builds separately.
-
-        // First, get all versions using new SDK API
         var parameters = APIEndpoint.V1.Apps.WithID.AppStoreVersions.GetParameters()
         parameters.fieldsAppStoreVersions = [.versionString, .platform, .appStoreState]
         parameters.limit = 10
@@ -54,7 +44,6 @@ struct ShowCommand: AsyncParsableCommand {
         let request = APIEndpoint.v1.apps.id(appID).appStoreVersions.get(parameters: parameters)
         let response = try await provider.request(request)
 
-        // Filter versions by platform
         let filteredVersions = response.data.filter {
             $0.attributes?.platform == platform
         }
@@ -72,15 +61,12 @@ struct ShowCommand: AsyncParsableCommand {
             return
         }
 
-        // Now get all builds for this app and platform to match them
         let buildMap = try await getBuildsMap(provider: provider, appID: appID, platform: platform)
 
-        // Process each version
         for (versionID, versionString, state) in versionData {
             print("  Version: \(versionString)")
             print("  State: \(state)")
 
-            // Check if there's a build assigned by looking at builds with matching appStoreVersion
             if let buildNumber = buildMap[versionID] {
                 print("  Build: \(buildNumber)")
             } else {
@@ -90,12 +76,11 @@ struct ShowCommand: AsyncParsableCommand {
         }
     }
 
-    private func getBuildsMap(
+    static func getBuildsMap(
         provider: APIProvider,
         appID: String,
         platform: Platform
     ) async throws -> [String: String] {
-        // Get all versions with build relationship included
         var parameters = APIEndpoint.V1.Apps.WithID.AppStoreVersions.GetParameters()
         parameters.fieldsAppStoreVersions = [.versionString, .platform, .build]
         parameters.fieldsBuilds = [.version]
@@ -105,25 +90,24 @@ struct ShowCommand: AsyncParsableCommand {
         let request = APIEndpoint.v1.apps.id(appID).appStoreVersions.get(parameters: parameters)
         let response = try await provider.request(request)
 
-        // Build map of versionID -> buildNumber
-        var buildMap: [String: String] = [:]
+        // Pre-compute a lookup of build ID → build version from included data
+        var buildVersionByID: [String: String] = [:]
+        if let included = response.included {
+            for item in included {
+                if case .build(let build) = item, let version = build.attributes?.version {
+                    buildVersionByID[build.id] = version
+                }
+            }
+        }
 
-        // Filter versions by platform
+        var buildMap: [String: String] = [:]
         let filteredVersions = response.data.filter {
             $0.attributes?.platform == platform
         }
 
-        // Extract build information from included data
         for version in filteredVersions {
-            // Check if this version has a build relationship
-            if let buildData = version.relationships?.build?.data,
-               let build = response.included?.compactMap({ includedItem -> Build? in
-                   if case .build(let buildItem) = includedItem {
-                       return buildItem
-                   }
-                   return nil
-               }).first(where: { $0.id == buildData.id }),
-               let buildVersion = build.attributes?.version {
+            if let buildID = version.relationships?.build?.data?.id,
+               let buildVersion = buildVersionByID[buildID] {
                 buildMap[version.id] = buildVersion
             }
         }

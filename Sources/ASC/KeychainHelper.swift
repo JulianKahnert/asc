@@ -1,10 +1,3 @@
-//
-//  KeychainHelper.swift
-//  ASC
-//
-//  Created by Julian Kahnert on 07.11.25.
-//
-
 import ArgumentParser
 import AppStoreConnect_Swift_SDK
 import Foundation
@@ -13,8 +6,10 @@ import Security
 enum KeychainHelper {
     static let service = "de.JulianKahnert.asc"
 
+    // MARK: - Keychain Operations
+
     static func addKeychainItem(service: String, account: String, data: String) -> Bool {
-        let data = data.data(using: .utf8)!
+        guard let data = data.data(using: .utf8) else { return false }
 
         // Try with iCloud sync first
         var query: [String: Any] = [
@@ -109,18 +104,37 @@ enum KeychainHelper {
         return APIProvider(configuration: configuration)
     }
 
-    static func resolveAppID(provider: APIProvider, bundleID: String) async throws -> String {
+    // MARK: - App ID Resolution
+
+    /// Resolves an App ID or Bundle ID string to a numeric App ID.
+    ///
+    /// If the input contains a dot (e.g. "com.example.app"), it is treated as a
+    /// Bundle ID and resolved via the API. Otherwise it is returned as-is.
+    static func resolveAppID(provider: APIProvider, appIDOrBundleID input: String) async throws -> String {
+        guard input.contains(".") else { return input }
+
+        print("🔍 Resolving bundle ID '\(input)' to App ID...")
+
         var parameters = APIEndpoint.V1.Apps.GetParameters()
         parameters.fieldsApps = [.name, .bundleID]
-        parameters.filterBundleID = [bundleID]
+        parameters.filterBundleID = [input]
         parameters.limit = 1
 
         let request = APIEndpoint.v1.apps.get(parameters: parameters)
         let response = try await provider.request(request)
 
         guard let app = response.data.first else {
-            throw ValidationError("No app found with bundle ID '\(bundleID)'")
+            throw ValidationError("No app found with bundle ID '\(input)'")
         }
         return app.id
+    }
+
+    // MARK: - Xcode Cloud
+
+    /// Returns the Xcode Cloud CI Product ID for a given App ID.
+    static func getCiProductID(provider: APIProvider, appID: String) async throws -> String {
+        let request = APIEndpoint.v1.apps.id(appID).ciProduct.get()
+        let response = try await provider.request(request)
+        return response.data.id
     }
 }

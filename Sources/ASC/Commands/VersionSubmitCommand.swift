@@ -1,90 +1,92 @@
-//
-//  SubmitCommand.swift
-//  ASC
-//
-//  Created by Julian Kahnert on 09.11.25.
-//
-
 import ArgumentParser
 import AppStoreConnect_Swift_SDK
 import Foundation
 
-struct SubmitCommand: AsyncParsableCommand {
+/// Submits a prepared version for Apple review.
+struct VersionSubmitCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "submit",
-        abstract: "Submit version for Apple review"
+        abstract: "Submit version for Apple review.",
+        discussion: """
+            Examples:
+              $ asc versions submit com.example.app
+              $ asc versions submit com.example.app --platform ios
+            """
     )
 
-    @Argument(help: "The App ID or Bundle ID from App Store Connect")
+    @Argument(help: "The App ID or Bundle ID from App Store Connect.")
     var appID: String
 
-    @Option(help: "Platform (ios, macos, or both)")
+    @Option(help: "Platform (ios, macos, or both).")
     var platform: String = "both"
 
     func run() async throws {
-        // Determine which platforms to process
-        let platforms: [(name: String, value: Platform)]
+        let platforms: [Platform]
         switch platform.lowercased() {
         case "ios":
-            platforms = [("iOS", .ios)]
+            platforms = [.ios]
         case "macos":
-            platforms = [("macOS", .macOs)]
+            platforms = [.macOs]
         case "both":
-            platforms = [("iOS", .ios), ("macOS", .macOs)]
+            platforms = [.ios, .macOs]
         default:
             throw ValidationError("Invalid platform. Use 'ios', 'macos', or 'both'")
         }
 
         let provider = try KeychainHelper.createAPIProvider()
+        let resolvedAppID = try await KeychainHelper.resolveAppID(provider: provider, appIDOrBundleID: appID)
 
-        // Check if appID is a bundle ID (contains dots) and convert to App ID if needed
-        var resolvedAppID = appID
-        if appID.contains(".") {
-            print("🔍 Resolving bundle ID '\(appID)' to App ID...")
-            resolvedAppID = try await KeychainHelper.resolveAppID(provider: provider, bundleID: appID)
-        }
+        try await Self.execute(
+            provider: provider,
+            appID: resolvedAppID,
+            appIDDisplay: appID,
+            platforms: platforms
+        )
+    }
 
-        // Collect all versions to submit
-        var versionsToSubmit: [(platformName: String, platform: Platform, versionID: String, versionString: String)] = []
+    static func execute(
+        provider: APIProvider,
+        appID: String,
+        appIDDisplay: String,
+        platforms: [Platform]
+    ) async throws {
+        var versionsToSubmit: [(platform: Platform, versionID: String, versionString: String)] = []
 
-        for (platformName, platformValue) in platforms {
-            print("\n📱 Processing \(platformName)...")
+        for platform in platforms {
+            print("\n📱 Processing \(platform.name)...")
 
-            // Find the version ready for submission
             print("🔍 Finding version in PREPARE_FOR_SUBMISSION state...")
             guard let (versionID, versionString) = try await findPreparedVersion(
                 provider: provider,
-                appID: resolvedAppID,
-                platform: platformValue
+                appID: appID,
+                platform: platform
             ) else {
-                print("⚠️  No version found in PREPARE_FOR_SUBMISSION state for \(platformName)")
+                print("⚠️  No version found in PREPARE_FOR_SUBMISSION state for \(platform.name)")
                 continue
             }
 
             print("  Found version: \(versionString) (ID: \(versionID))")
-            versionsToSubmit.append((platformName, platformValue, versionID, versionString))
+            versionsToSubmit.append((platform, versionID, versionString))
         }
 
-        // If no versions found, exit
         guard !versionsToSubmit.isEmpty else {
             print("\n❌ No versions ready for submission")
             return
         }
 
-        // Submit all versions in one ReviewSubmission
         print("\n📤 Creating review submission for \(versionsToSubmit.count) version(s)...")
         do {
-            try await submitVersions(provider: provider, appID: resolvedAppID, versions: versionsToSubmit)
+            try await submitVersions(provider: provider, appID: appID, versions: versionsToSubmit)
             print("\n✅ Successfully submitted for review:")
             for version in versionsToSubmit {
-                print("   • \(version.platformName): \(version.versionString)")
+                print("   \(version.platform.name): \(version.versionString)")
             }
         } catch {
             let errorString = String(describing: error)
             if errorString.contains("build") || errorString.contains("BUILD") {
                 print("❌ Error: Build missing for one or more versions")
                 for version in versionsToSubmit {
-                    print("   Check: asc select-build \(appID) \(version.versionString) --platform \(version.platformName.lowercased())")
+                    print("   Check: asc versions select-build \(appIDDisplay) \(version.versionString) --platform \(version.platform.name.lowercased())")
                 }
             } else {
                 print("❌ Error submitting versions: \(error)")
@@ -92,7 +94,7 @@ struct SubmitCommand: AsyncParsableCommand {
         }
     }
 
-    private func findPreparedVersion(
+    static func findPreparedVersion(
         provider: APIProvider,
         appID: String,
         platform: Platform
@@ -100,7 +102,6 @@ struct SubmitCommand: AsyncParsableCommand {
         var parameters = APIEndpoint.V1.Apps.WithID.AppStoreVersions.GetParameters()
         parameters.fieldsAppStoreVersions = [.versionString, .platform, .appStoreState]
 
-        // Map Platform to FilterPlatform
         let filterPlatform: APIEndpoint.V1.Apps.WithID.AppStoreVersions.GetParameters.FilterPlatform
         switch platform {
         case .ios:
@@ -128,20 +129,14 @@ struct SubmitCommand: AsyncParsableCommand {
         }
     }
 
-    private func submitVersions(
+    static func submitVersions(
         provider: APIProvider,
         appID: String,
-        versions: [(platformName: String, platform: Platform, versionID: String, versionString: String)]
+        versions: [(platform: Platform, versionID: String, versionString: String)]
     ) async throws {
-        // Apple's ReviewSubmission rules:
-        // - One ReviewSubmission can only contain ONE app store version
-        // - Must specify platform attribute
-        // - Create separate ReviewSubmissions for each platform
-
         for version in versions {
-            print("  Processing \(version.platformName) version \(version.versionString)...")
+            print("  Processing \(version.platform.name) version \(version.versionString)...")
 
-            // Check if ReviewSubmission already exists for this platform
             let reviewSubmissionID: String
 
             if let existingID = try await findExistingReviewSubmission(
@@ -152,7 +147,6 @@ struct SubmitCommand: AsyncParsableCommand {
                 print("    Found existing review submission with ID: \(existingID)")
                 reviewSubmissionID = existingID
             } else {
-                // Create ReviewSubmission for this platform
                 let reviewSubmissionRequest = ReviewSubmissionCreateRequest(
                     data: .init(
                         type: .reviewSubmissions,
@@ -174,7 +168,6 @@ struct SubmitCommand: AsyncParsableCommand {
                 print("    Created review submission with ID: \(reviewSubmissionID)")
             }
 
-            // Add the version as ReviewSubmissionItem
             print("    Adding version as review item...")
             let itemRequest = ReviewSubmissionItemCreateRequest(
                 data: .init(
@@ -199,18 +192,16 @@ struct SubmitCommand: AsyncParsableCommand {
             let addItemRequest = APIEndpoint.v1.reviewSubmissionItems.post(itemRequest)
             _ = try await provider.request(addItemRequest)
 
-            // Actually submit the review submission
             print("    Submitting review submission for review...")
             try await submitReviewSubmission(provider: provider, reviewSubmissionID: reviewSubmissionID)
             print("    ✅ Submitted to App Store Review")
         }
     }
 
-    private func submitReviewSubmission(
+    static func submitReviewSubmission(
         provider: APIProvider,
         reviewSubmissionID: String
     ) async throws {
-        // Update the ReviewSubmission state to submit it
         let updateRequest = ReviewSubmissionUpdateRequest(
             data: .init(
                 type: .reviewSubmissions,
@@ -223,12 +214,11 @@ struct SubmitCommand: AsyncParsableCommand {
         _ = try await provider.request(request)
     }
 
-    private func findExistingReviewSubmission(
+    static func findExistingReviewSubmission(
         provider: APIProvider,
         appID: String,
         platform: Platform
     ) async throws -> String? {
-        // Map Platform to FilterPlatform
         let filterPlatform: APIEndpoint.V1.ReviewSubmissions.GetParameters.FilterPlatform
         switch platform {
         case .ios:
@@ -241,7 +231,6 @@ struct SubmitCommand: AsyncParsableCommand {
             filterPlatform = .visionOs
         }
 
-        // Look for existing review submissions for this app and platform
         var parameters = APIEndpoint.V1.ReviewSubmissions.GetParameters(filterApp: [appID])
         parameters.filterPlatform = [filterPlatform]
         parameters.filterState = [.readyForReview, .waitingForReview, .inReview]

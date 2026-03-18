@@ -1,17 +1,14 @@
-//
-//  ClearCommand.swift
-//  ASC
-//
-//  Created by Julian Kahnert on 07.11.25.
-//
-
 import ArgumentParser
 import Foundation
 
 struct ClearCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "clear",
-        abstract: "Remove all stored credentials from keychain"
+        abstract: "Remove all stored credentials from keychain.",
+        discussion: """
+            Examples:
+              $ asc clear
+            """
     )
 
     func run() async throws {

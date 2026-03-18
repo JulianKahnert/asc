@@ -1,24 +1,19 @@
-//
-//  ASC.swift
-//  ASC
-//
-//  Created by Julian Kahnert on 07.11.25.
-//
-
 import ArgumentParser
 
-@main
-struct ASC: AsyncParsableCommand {
-    static let configuration = CommandConfiguration(
-        abstract: "AppStoreConnect Helper - Manage your App Store Connect versions",
+// Renamed from ASC to ASCMain so the module can be imported as a library
+// by the ASCExecutable target (which calls ASCMain.main()) and by tests.
+public struct ASCMain: AsyncParsableCommand {
+    public init() {}
+
+    public static let configuration = CommandConfiguration(
+        commandName: "asc",
+        abstract: "AppStoreConnect Helper - Manage your App Store Connect versions.",
         subcommands: [
             InitCommand.self,
-            VersionCommand.self,
-            ShowCommand.self,
-            SelectBuildCommand.self,
-            SubmitCommand.self,
-            ListAppsCommand.self,
-            ClearCommand.self
+            ClearCommand.self,
+            AppsCommand.self,
+            VersionsCommand.self,
+            WorkflowsCommand.self
         ]
     )
 }

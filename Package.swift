@@ -13,7 +13,7 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/AvdLee/appstoreconnect-swift-sdk.git", branch: "master"),
-        .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.7.0"),
+        .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.7.1"),
     ],
     targets: [
         // Library target – importable by both the executable wrapper and tests.

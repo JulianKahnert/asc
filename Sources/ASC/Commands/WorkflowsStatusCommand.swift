@@ -20,18 +20,38 @@ struct WorkflowsStatusCommand: AsyncParsableCommand {
     @Option(help: "Filter by workflow name.")
     var workflow: String?
 
+    @Flag(name: .long, help: "Output the result as JSON.")
+    var json = false
+
+    /// A single build run for `--json` output.
+    struct StatusRun: Codable {
+        let number: Int?
+        let branch: String?
+        let commitSha: String?
+        let status: String
+        let startReason: String?
+        let createdDate: Date?
+    }
+
+    /// A workflow together with its recent build runs, for `--json` output.
+    struct WorkflowStatus: Codable {
+        let workflow: String
+        let runs: [StatusRun]
+    }
+
     func run() async throws {
         let provider = try KeychainHelper.createAPIProvider()
         let resolvedAppID = try await KeychainHelper.resolveAppID(provider: provider, appIDOrBundleID: appID)
         let productID = try await KeychainHelper.getCiProductID(provider: provider, appID: resolvedAppID)
 
-        try await Self.execute(provider: provider, productID: productID, workflowFilter: workflow)
+        try await Self.execute(provider: provider, productID: productID, workflowFilter: workflow, json: json)
     }
 
     static func execute(
         provider: APIProvider,
         productID: String,
-        workflowFilter: String?
+        workflowFilter: String?,
+        json: Bool = false
     ) async throws {
         let workflows = try await listWorkflows(provider: provider, productID: productID)
 
@@ -48,38 +68,57 @@ struct WorkflowsStatusCommand: AsyncParsableCommand {
             targetWorkflows = workflows
         }
 
-        var foundAny = false
-
+        var statuses: [WorkflowStatus] = []
         for targetWorkflow in targetWorkflows {
             let buildRuns = try await getRecentBuildRuns(
                 provider: provider,
                 workflowID: targetWorkflow.id
             )
-
             guard !buildRuns.isEmpty else { continue }
-            foundAny = true
 
-            if workflowFilter != nil {
-                print("Recent builds for \"\(targetWorkflow.name)\":\n")
-            } else {
-                print("\(targetWorkflow.name):")
+            let runs = buildRuns.map { run in
+                StatusRun(
+                    number: run.number,
+                    branch: run.sourceBranchName,
+                    commitSha: run.sourceCommitSha,
+                    status: formatStatus(progress: run.executionProgress, completion: run.completionStatus),
+                    startReason: run.startReason,
+                    createdDate: run.createdDate
+                )
             }
-
-            for run in buildRuns {
-                let number = run.number.map { "#\($0)" } ?? "?"
-                let status = formatStatus(progress: run.executionProgress, completion: run.completionStatus)
-                let branch = run.sourceBranchName ?? "unknown"
-                let time = formatRelativeTime(run.createdDate)
-
-                let reason = run.startReason.map { "(\($0))" } ?? ""
-                let sha = run.sourceCommitSha ?? ""
-                print("  \(number)  \(branch)  \(sha)  \(status)  \(time)  \(reason)")
-            }
-            print("")
+            statuses.append(WorkflowStatus(workflow: targetWorkflow.name, runs: runs))
         }
 
-        if !foundAny {
+        if json {
+            try JSONOutput.emit(statuses)
+            return
+        }
+
+        printStatuses(statuses, filtered: workflowFilter != nil)
+    }
+
+    static func printStatuses(_ statuses: [WorkflowStatus], filtered: Bool) {
+        guard !statuses.isEmpty else {
             print("No recent builds found.")
+            return
+        }
+
+        for status in statuses {
+            if filtered {
+                print("Recent builds for \"\(status.workflow)\":\n")
+            } else {
+                print("\(status.workflow):")
+            }
+
+            for run in status.runs {
+                let number = run.number.map { "#\($0)" } ?? "?"
+                let branch = run.branch ?? "unknown"
+                let time = formatRelativeTime(run.createdDate)
+                let reason = run.startReason.map { "(\($0))" } ?? ""
+                let sha = run.commitSha ?? ""
+                print("  \(number)  \(branch)  \(sha)  \(run.status)  \(time)  \(reason)")
+            }
+            print("")
         }
     }
 

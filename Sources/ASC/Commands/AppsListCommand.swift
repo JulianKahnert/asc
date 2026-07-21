@@ -13,12 +13,28 @@ struct AppsListCommand: AsyncParsableCommand {
             """
     )
 
+    @Flag(name: .long, help: "Output the result as JSON.")
+    var json = false
+
+    /// A single app for `--json` output.
+    struct AppSummary: Codable {
+        let id: String
+        let name: String
+        let bundleID: String
+    }
+
     func run() async throws {
         let provider = try KeychainHelper.createAPIProvider()
 
-        print("📱 Fetching apps from App Store Connect...\n")
+        if !json { print("📱 Fetching apps from App Store Connect...\n") }
 
-        let apps = try await Self.listApps(provider: provider)
+        let tuples = try await Self.listApps(provider: provider)
+        let apps = tuples.map { AppSummary(id: $0.id, name: $0.name, bundleID: $0.bundleID) }
+
+        if json {
+            try JSONOutput.emit(apps)
+            return
+        }
 
         if apps.isEmpty {
             print("No apps found in your account.")

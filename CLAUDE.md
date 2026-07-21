@@ -32,12 +32,30 @@ Commands use a resource-based noun-verb pattern, grouped by resource:
 asc init / clear                          # Credential management
 asc apps list                             # App listing
 asc versions create / show / select-build / submit  # Version lifecycle
-asc workflows list / trigger / status     # Xcode Cloud workflows
+asc workflows list / trigger / status     # Xcode Cloud workflow definitions
+asc runs list / view / download           # Xcode Cloud build runs & artifacts
 ```
 
-- **ASC.swift**: Main entry point registering command groups
-- **Commands/**: Flat directory with prefixed filenames (e.g., `VersionCreateCommand.swift`, `WorkflowsTriggerCommand.swift`). Command groups (e.g., `VersionsCommand.swift`) register their subcommands.
-- **KeychainHelper.swift**: Centralized keychain operations with static service identifier `"de.JulianKahnert.asc"`
+Mirrors the `gh` CLI split: `workflows` manages the workflow *definitions* (like
+`gh workflow`), `runs` works with their individual *executions* and artifacts
+(like `gh run`). Resources are flat top-level nouns; ownership is expressed via
+the `<app>` argument and filters (e.g. `--workflow`), not command nesting.
+
+- **ASCMain** (`ASC.swift`): the root command that registers the command groups. It lives in the importable **`ASC` library target**; the actual `@main` executable is a thin wrapper in `Sources/ASCExecutable/Entry.swift` that calls `ASCMain.main()`. This split lets the test target import the library and exercise commands directly.
+- **Commands/**: Flat directory with prefixed filenames (e.g., `VersionCreateCommand.swift`, `RunsDownloadCommand.swift`). Command groups (e.g., `VersionsCommand.swift`, `RunsCommand.swift`) register their subcommands.
+- **KeychainHelper.swift**: Centralized keychain operations with static service identifier `"de.JulianKahnert.asc"`; also hosts shared `resolveAppID()` and `getCiProductID()` helpers.
+- **VersionLogic.swift / RunsLogic.swift**: Fetch/parse logic extracted from the command types so it can be unit-tested in isolation against mock API responses.
+- **JSONOutput.swift**: Shared `--json` output helper (see below).
+- **Platform+Extensions.swift**: `Platform` display-name helper for CLI output.
+
+### JSON Output (`--json`)
+
+Every data-returning command accepts a global `--json` flag. When set, the
+command prints a single JSON document (via `JSONOutput.emit`) and suppresses the
+human-readable output, so other clients can parse results programmatically.
+Currently wired into `apps list`, `versions show`, `workflows list`,
+`workflows status`, and all `runs` subcommands. Command logic builds a `Codable`
+model and either emits it as JSON or renders it as text.
 
 ### Key Dependencies
 
@@ -74,6 +92,29 @@ The `workflows` group uses App Store Connect CI endpoints:
 - **list**: Gets CI product for app, then lists workflows with name/enabled/ID
 - **trigger**: Resolves workflow by name, finds branch git reference, posts `CiBuildRunCreateRequest`
 - **status**: Lists recent build runs per workflow with progress/completion status
+
+### Runs Commands (build runs & artifacts)
+
+The `runs` group inspects Xcode Cloud build runs and their downloadable
+artifacts. Logic lives in `RunsLogic.swift`. The relevant API hierarchy is:
+
+```
+CiProduct → CiWorkflow → CiBuildRun → CiBuildAction → { CiArtifact, CiIssue, CiTestResult }
+```
+
+Key detail: **artifacts hang off `CiBuildAction`, not `CiBuildRun`** — there is
+no `/ciBuildRuns/{id}/artifacts`. To get all artifacts of a build, iterate the
+run's actions and collect each action's artifacts.
+
+- **list**: Lists recent build runs for the app (`ciProducts/{id}/buildRuns`), or a single workflow's runs (`ciWorkflows/{id}/buildRuns`) with `--workflow`. Resolves branch and workflow names from the `included` payload.
+- **view**: Resolves a build *number* to its run, fetches its actions with issue counts, and (for failed / all actions) their issues and downloadable artifacts. `--failed` restricts to failed actions.
+- **download**: Fetches fresh pre-signed artifact URLs and downloads matching files to `--output` (default cwd). `--type` filters by file type (LOG_BUNDLE, RESULT_BUNDLE, ARCHIVE, …); `--action` filters by action name.
+
+**Artifact download URLs**: `CiArtifact.downloadUrl` is a short-lived,
+pre-signed URL that needs no App Store Connect credentials to fetch, but expires
+(typically within minutes). Always re-fetch it from the API immediately before
+downloading — never treat it as a durable link. `runs download` does this and
+uses a plain `URLSession` to save the file.
 
 ## Platform Requirements
 

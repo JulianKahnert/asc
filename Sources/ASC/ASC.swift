@@ -13,7 +13,8 @@ public struct ASCMain: AsyncParsableCommand {
             ClearCommand.self,
             AppsCommand.self,
             VersionsCommand.self,
-            WorkflowsCommand.self
+            WorkflowsCommand.self,
+            RunsCommand.self
         ]
     )
 }

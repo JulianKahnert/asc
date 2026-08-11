@@ -17,20 +17,37 @@ struct WorkflowsListCommand: AsyncParsableCommand {
     @Argument(help: "The App ID or Bundle ID from App Store Connect.")
     var appID: String
 
+    @Flag(name: .long, help: "Output the result as JSON.")
+    var json = false
+
+    /// A single workflow for `--json` output.
+    struct WorkflowSummary: Codable {
+        let id: String
+        let name: String
+        let enabled: Bool
+    }
+
     func run() async throws {
         let provider = try KeychainHelper.createAPIProvider()
         let resolvedAppID = try await KeychainHelper.resolveAppID(provider: provider, appIDOrBundleID: appID)
         let productID = try await KeychainHelper.getCiProductID(provider: provider, appID: resolvedAppID)
 
-        try await Self.execute(provider: provider, productID: productID, appIDDisplay: appID)
+        try await Self.execute(provider: provider, productID: productID, appIDDisplay: appID, json: json)
     }
 
     static func execute(
         provider: APIProvider,
         productID: String,
-        appIDDisplay: String
+        appIDDisplay: String,
+        json: Bool = false
     ) async throws {
         let workflows = try await listWorkflows(provider: provider, productID: productID)
+
+        if json {
+            let summaries = workflows.map { WorkflowSummary(id: $0.id, name: $0.name, enabled: $0.isEnabled) }
+            try JSONOutput.emit(summaries)
+            return
+        }
 
         if workflows.isEmpty {
             print("No workflows found.")

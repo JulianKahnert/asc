@@ -17,19 +17,67 @@ struct VersionShowCommand: AsyncParsableCommand {
     @Argument(help: "The App ID or Bundle ID from App Store Connect.")
     var appID: String
 
+    @Flag(name: .long, help: "Output the result as JSON.")
+    var json = false
+
+    /// A prepared version for `--json` output.
+    struct VersionInfo: Codable {
+        let platform: String
+        let version: String
+        let state: String
+        let build: String?
+    }
+
     func run() async throws {
         let provider = try KeychainHelper.createAPIProvider()
         let resolvedAppID = try await KeychainHelper.resolveAppID(provider: provider, appIDOrBundleID: appID)
 
-        try await Self.execute(provider: provider, appID: resolvedAppID)
+        try await Self.execute(provider: provider, appID: resolvedAppID, json: json)
     }
 
-    static func execute(provider: APIProvider, appID: String) async throws {
+    static func execute(provider: APIProvider, appID: String, json: Bool = false) async throws {
+        if json {
+            var infos = try await versionInfos(provider: provider, appID: appID, platform: .ios)
+            infos += try await versionInfos(provider: provider, appID: appID, platform: .macOs)
+            try JSONOutput.emit(infos)
+            return
+        }
+
         print("\n📱 iOS Versions:")
         try await showVersionInfo(provider: provider, appID: appID, platform: .ios)
 
         print("\n💻 macOS Versions:")
         try await showVersionInfo(provider: provider, appID: appID, platform: .macOs)
+    }
+
+    /// Fetches prepared versions for a platform as structured data.
+    static func versionInfos(
+        provider: APIProvider,
+        appID: String,
+        platform: Platform
+    ) async throws -> [VersionInfo] {
+        var parameters = APIEndpoint.V1.Apps.WithID.AppStoreVersions.GetParameters()
+        parameters.fieldsAppStoreVersions = [.versionString, .platform, .appStoreState]
+        parameters.limit = 10
+
+        let request = APIEndpoint.v1.apps.id(appID).appStoreVersions.get(parameters: parameters)
+        let response = try await provider.request(request)
+
+        let filtered = response.data.filter { $0.attributes?.platform == platform }
+        let buildMap = try await getBuildsMap(provider: provider, appID: appID, platform: platform)
+
+        return filtered.compactMap { version -> VersionInfo? in
+            guard let versionString = version.attributes?.versionString,
+                  let state = version.attributes?.appStoreState?.rawValue else {
+                return nil
+            }
+            return VersionInfo(
+                platform: platform.name,
+                version: versionString,
+                state: state,
+                build: buildMap[version.id]
+            )
+        }
     }
 
     static func showVersionInfo(
